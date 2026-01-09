@@ -125,6 +125,15 @@ pub fn run_tui(path: &str, markdown: &str) -> io::Result<()> {
                     KeyCode::PageUp => {
                         scroll = scroll.saturating_sub(page);
                     }
+                    KeyCode::Char(' ') => {
+                        scroll = scroll.saturating_add(page);
+                    }
+                    KeyCode::Tab => {
+                        scroll = scroll.saturating_add(page);
+                    }
+                    KeyCode::BackTab => {
+                        scroll = scroll.saturating_sub(page);
+                    }
                     KeyCode::Home => {
                         scroll = 0;
                     }
