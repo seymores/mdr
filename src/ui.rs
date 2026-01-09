@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientatio
 use ratatui::Terminal;
 
 use crate::beeline::apply_beeline;
-use crate::markdown::{estimate_rendered_lines, render_markdown_to_lines};
+use crate::markdown::{estimate_rendered_lines, render_markdown_to_lines, render_plain_lines};
 use crate::theme::Theme;
 
 pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<()> {
@@ -25,6 +25,9 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
     let mut scroll: u16 = 0;
     let mut viewport_height: u16 = 0;
     let mut rendered_lines: u16 = 0;
+    let mut beeline_enabled = enable_beeline;
+    let mut plain_mode = false;
+    let mut show_help = false;
 
     loop {
         terminal.draw(|frame| {
@@ -50,23 +53,40 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                 .constraints([Constraint::Min(1), Constraint::Length(1)])
                 .split(inner);
 
-            let lines = render_markdown_to_lines(markdown, content_chunks[0].width, &theme);
-            let lines = if enable_beeline {
-                apply_beeline(&lines, &theme)
+            if show_help {
+                let help_lines = help_lines();
+                let content = Text::from(help_lines.clone());
+                let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
+                viewport_height = content_chunks[0].height;
+                rendered_lines = estimate_rendered_lines(&help_lines, content_chunks[0].width);
+                let max_scroll = rendered_lines.saturating_sub(viewport_height);
+                if scroll > max_scroll {
+                    scroll = max_scroll;
+                }
+                let paragraph = paragraph.scroll((scroll, 0));
+                frame.render_widget(paragraph, content_chunks[0]);
             } else {
-                lines
-            };
-            let content = Text::from(lines.clone());
-            let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
-            viewport_height = content_chunks[0].height;
-            rendered_lines = estimate_rendered_lines(&lines, content_chunks[0].width);
-            let max_scroll = rendered_lines.saturating_sub(viewport_height);
-            if scroll > max_scroll {
-                scroll = max_scroll;
+                let lines = if plain_mode {
+                    render_plain_lines(markdown)
+                } else {
+                    render_markdown_to_lines(markdown, content_chunks[0].width, &theme)
+                };
+                let lines = if beeline_enabled && !plain_mode {
+                    apply_beeline(&lines, &theme)
+                } else {
+                    lines
+                };
+                let content = Text::from(lines.clone());
+                let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
+                viewport_height = content_chunks[0].height;
+                rendered_lines = estimate_rendered_lines(&lines, content_chunks[0].width);
+                let max_scroll = rendered_lines.saturating_sub(viewport_height);
+                if scroll > max_scroll {
+                    scroll = max_scroll;
+                }
+                let paragraph = paragraph.scroll((scroll, 0));
+                frame.render_widget(paragraph, content_chunks[0]);
             }
-
-            let paragraph = paragraph.scroll((scroll, 0));
-            frame.render_widget(paragraph, content_chunks[0]);
 
             if rendered_lines > viewport_height {
                 let scroll_len = rendered_lines
@@ -87,8 +107,14 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                 .constraints([Constraint::Min(1), Constraint::Length(24)])
                 .split(chunks[1]);
 
-            let help = Line::raw("Up/Down, j/k, Space/Tab for page down, Shift+Tab for page up • q to quit")
-                .style(Style::new().fg(theme.footer).dim());
+            let help = if show_help {
+                Line::raw("Help • h to close • q quit").style(Style::new().fg(theme.footer).dim())
+            } else {
+                Line::raw(
+                    "Up/Down, j/k, Space/Tab for page down, Shift+Tab for page up • b BeeLine • m plain • h help • q quit",
+                )
+                .style(Style::new().fg(theme.footer).dim())
+            };
             frame.render_widget(Paragraph::new(help), footer_chunks[0]);
 
             let total_lines = rendered_lines.max(1);
@@ -117,6 +143,16 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                 let max_scroll = rendered_lines.saturating_sub(viewport_height);
                 match key.code {
                     KeyCode::Char('q') => break,
+                    KeyCode::Char('h') => {
+                        show_help = !show_help;
+                        scroll = 0;
+                    }
+                    KeyCode::Char('b') => {
+                        beeline_enabled = !beeline_enabled;
+                    }
+                    KeyCode::Char('m') => {
+                        plain_mode = !plain_mode;
+                    }
                     KeyCode::Down | KeyCode::Char('j') => {
                         scroll = scroll.saturating_add(1);
                     }
@@ -168,4 +204,27 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
     execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+fn help_lines() -> Vec<Line<'static>> {
+    vec![
+        Line::from(Span::styled(
+            "mdr - help",
+            Style::new().add_modifier(Modifier::BOLD),
+        )),
+        Line::raw(""),
+        Line::raw("Navigation:"),
+        Line::raw("  Up/Down, j/k         Scroll line by line"),
+        Line::raw("  Space, Tab           Page down"),
+        Line::raw("  Shift+Tab            Page up"),
+        Line::raw("  Mouse wheel          Scroll"),
+        Line::raw(""),
+        Line::raw("Modes:"),
+        Line::raw("  b                    Toggle BeeLine"),
+        Line::raw("  m                    Toggle plain mode"),
+        Line::raw(""),
+        Line::raw("General:"),
+        Line::raw("  h                    Toggle help"),
+        Line::raw("  q                    Quit"),
+    ]
 }

@@ -262,6 +262,13 @@ pub fn render_markdown_to_lines(
     lines
 }
 
+pub fn render_plain_lines(markdown: &str) -> Vec<Line<'static>> {
+    markdown
+        .lines()
+        .map(|line| Line::raw(line.to_string()))
+        .collect()
+}
+
 pub fn estimate_rendered_lines(lines: &[Line<'static>], width: u16) -> u16 {
     if width == 0 {
         return 0;
