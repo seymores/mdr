@@ -38,7 +38,7 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                 .split(frame.size());
 
             let title = Span::styled(
-                format!("{}  (q to quit, j/k or arrows to scroll)", path),
+                format!("{}", path),
                 Style::new().fg(theme.title).add_modifier(Modifier::BOLD),
             );
             let block = Block::default()
@@ -107,14 +107,8 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                 .constraints([Constraint::Min(1), Constraint::Length(24)])
                 .split(chunks[1]);
 
-            let help = if show_help {
-                Line::raw("Help • h to close • q quit").style(Style::new().fg(theme.footer).dim())
-            } else {
-                Line::raw(
-                    "Up/Down, j/k, Space/Tab for page down, Shift+Tab for page up • b BeeLine • m plain • h help • q quit",
-                )
-                .style(Style::new().fg(theme.footer).dim())
-            };
+            let help = Line::raw("Press h for commands • q quit")
+                .style(Style::new().fg(theme.footer).dim());
             frame.render_widget(Paragraph::new(help), footer_chunks[0]);
 
             let total_lines = rendered_lines.max(1);
@@ -133,7 +127,7 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                     Span::raw(" "),
                     Span::styled(format!("{}%", percent), Style::new().fg(theme.footer).dim()),
                 ]);
-                frame.render_widget(Paragraph::new(status), footer_chunks[1]);
+                frame.render_widget(Paragraph::new(status).right_aligned(), footer_chunks[1]);
             }
         })?;
 
@@ -214,9 +208,8 @@ fn help_lines() -> Vec<Line<'static>> {
         )),
         Line::raw(""),
         Line::raw("Navigation:"),
-        Line::raw("  Up/Down, j/k         Scroll line by line"),
-        Line::raw("  Space, Tab           Page down"),
-        Line::raw("  Shift+Tab            Page up"),
+        Line::raw("  Up/Down              Scroll line by line"),
+        Line::raw("  Space                Page down"),
         Line::raw("  Mouse wheel          Scroll"),
         Line::raw(""),
         Line::raw("Modes:"),
