@@ -5,11 +5,12 @@ A small TUI markdown reader for the terminal.
 ## Features
 - Terminal UI with a pastel color theme.
 - BeeLine-style gradient for easier line tracking (disable with `--no-beeline`).
-- Keyboard navigation: Up/Down, j/k, Space/Tab for page down, Shift+Tab for page up.
+- Keyboard navigation: Up/Down, Space for page down, `h` for commands.
 - Mouse wheel scrolling.
 - Basic markdown styling for headings, lists, emphasis, inline code, blockquotes, and rules.
 - Tables with column fitting and multi-line cell wrapping.
 - Scrollbar that hides when all content fits on screen.
+- Search with `/`, next/prev via `n`/`N`, and match highlighting.
 
 ![Screenshot](docs/screenshot.png)
 
