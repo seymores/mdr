@@ -28,6 +28,10 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
     let mut beeline_enabled = enable_beeline;
     let mut plain_mode = false;
     let mut show_help = false;
+    let mut search_mode = false;
+    let mut search_query = String::new();
+    let mut search_matches: Vec<u16> = Vec::new();
+    let mut search_index: usize = 0;
 
     loop {
         terminal.draw(|frame| {
@@ -66,16 +70,35 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                 let paragraph = paragraph.scroll((scroll, 0));
                 frame.render_widget(paragraph, content_chunks[0]);
             } else {
-                let lines = if plain_mode {
+                let mut lines = if plain_mode {
                     render_plain_lines(markdown)
                 } else {
                     render_markdown_to_lines(markdown, content_chunks[0].width, &theme)
                 };
-                let lines = if beeline_enabled && !plain_mode {
-                    apply_beeline(&lines, &theme)
+                if beeline_enabled && !plain_mode {
+                    lines = apply_beeline(&lines, &theme);
+                }
+                let lines_text: Vec<String> = lines
+                    .iter()
+                    .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+                    .collect();
+                if search_query.is_empty() {
+                    search_matches.clear();
+                    search_index = 0;
                 } else {
-                    lines
-                };
+                    let match_lines = find_matches(&lines_text, &search_query);
+                    let line_offsets = line_offsets(&lines, content_chunks[0].width);
+                    search_matches = match_lines
+                        .iter()
+                        .filter_map(|line_idx| line_offsets.get(*line_idx).copied())
+                        .collect();
+                    if search_index >= search_matches.len() {
+                        search_index = 0;
+                    }
+                }
+                if !search_query.is_empty() {
+                    lines = apply_search_highlight(&lines, &search_query, &theme);
+                }
                 let content = Text::from(lines.clone());
                 let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
                 viewport_height = content_chunks[0].height;
@@ -107,8 +130,12 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                 .constraints([Constraint::Min(1), Constraint::Length(24)])
                 .split(chunks[1]);
 
-            let help = Line::raw("Press h for commands • q quit")
-                .style(Style::new().fg(theme.footer).dim());
+            let help = if search_mode {
+                Line::raw(format!("/{}", search_query))
+            } else {
+                Line::raw("Press h for commands • / search • q quit")
+            }
+            .style(Style::new().fg(theme.footer).dim());
             frame.render_widget(Paragraph::new(help), footer_chunks[0]);
 
             let total_lines = rendered_lines.max(1);
@@ -119,14 +146,30 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                 } else {
                     (scroll.saturating_mul(100) / max_scroll).min(100)
                 };
-                let status = Line::from(vec![
-                    Span::styled(
-                        format!("{}/{}", scroll.saturating_add(1), total_lines),
-                        Style::new().fg(theme.footer).dim(),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(format!("{}%", percent), Style::new().fg(theme.footer).dim()),
-                ]);
+                let mut status_spans = vec![Span::styled(
+                    format!("{}/{}", scroll.saturating_add(1), total_lines),
+                    Style::new().fg(theme.footer).dim(),
+                )];
+                if !search_query.is_empty() {
+                    status_spans.push(Span::raw(" "));
+                    if search_matches.is_empty() {
+                        status_spans.push(Span::styled(
+                            "no matches",
+                            Style::new().fg(theme.footer).dim(),
+                        ));
+                    } else {
+                        status_spans.push(Span::styled(
+                            format!("{}/{}", search_index + 1, search_matches.len()),
+                            Style::new().fg(theme.footer).dim(),
+                        ));
+                    }
+                }
+                status_spans.push(Span::raw(" "));
+                status_spans.push(Span::styled(
+                    format!("{}%", percent),
+                    Style::new().fg(theme.footer).dim(),
+                ));
+                let status = Line::from(status_spans);
                 frame.render_widget(Paragraph::new(status).right_aligned(), footer_chunks[1]);
             }
         })?;
@@ -137,6 +180,47 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                 let max_scroll = rendered_lines.saturating_sub(viewport_height);
                 match key.code {
                     KeyCode::Char('q') => break,
+                    KeyCode::Char('/') if !show_help => {
+                        search_mode = true;
+                        search_query.clear();
+                        search_matches.clear();
+                        search_index = 0;
+                    }
+                    KeyCode::Enter if search_mode => {
+                        search_mode = false;
+                        if let Some(&line) = search_matches.first() {
+                            scroll = line.min(max_scroll);
+                        }
+                    }
+                    KeyCode::Esc if search_mode => {
+                        search_mode = false;
+                    }
+                    KeyCode::Backspace if search_mode => {
+                        search_query.pop();
+                        search_matches.clear();
+                        search_index = 0;
+                    }
+                    KeyCode::Char(c) if search_mode => {
+                        search_query.push(c);
+                        search_matches.clear();
+                        search_index = 0;
+                    }
+                    KeyCode::Char('n') if !search_mode && !show_help => {
+                        if !search_matches.is_empty() {
+                            search_index = (search_index + 1) % search_matches.len();
+                            scroll = search_matches[search_index].min(max_scroll);
+                        }
+                    }
+                    KeyCode::Char('N') if !search_mode && !show_help => {
+                        if !search_matches.is_empty() {
+                            if search_index == 0 {
+                                search_index = search_matches.len() - 1;
+                            } else {
+                                search_index -= 1;
+                            }
+                            scroll = search_matches[search_index].min(max_scroll);
+                        }
+                    }
                     KeyCode::Char('h') => {
                         show_help = !show_help;
                         scroll = 0;
@@ -212,6 +296,12 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::raw("  Space                Page down"),
         Line::raw("  Mouse wheel          Scroll"),
         Line::raw(""),
+        Line::raw("Search:"),
+        Line::raw("  /                    Start search"),
+        Line::raw("  Enter                Jump to first match"),
+        Line::raw("  Esc                  Cancel search"),
+        Line::raw("  n / N                Next/previous match"),
+        Line::raw(""),
         Line::raw("Modes:"),
         Line::raw("  b                    Toggle BeeLine"),
         Line::raw("  m                    Toggle plain mode"),
@@ -220,4 +310,125 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::raw("  h                    Toggle help"),
         Line::raw("  q                    Quit"),
     ]
+}
+
+fn find_matches(lines: &[String], query: &str) -> Vec<usize> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, line)| if !match_ranges(line, query).is_empty() { Some(idx) } else { None })
+        .collect()
+}
+
+fn apply_search_highlight(
+    lines: &[Line<'static>],
+    query: &str,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    if query.is_empty() {
+        return lines.to_vec();
+    }
+    lines
+        .iter()
+        .map(|line| apply_search_highlight_line(line, query, theme))
+        .collect()
+}
+
+fn apply_search_highlight_line(
+    line: &Line<'static>,
+    query: &str,
+    theme: &Theme,
+) -> Line<'static> {
+    let line_text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    let ranges = match_ranges(&line_text, query);
+    if ranges.is_empty() {
+        return line.clone();
+    }
+
+    let char_offsets: Vec<usize> = line_text.char_indices().map(|(i, _)| i).collect();
+    let mut highlights = vec![false; char_offsets.len()];
+    for (start, end) in ranges {
+        for (idx, &byte_offset) in char_offsets.iter().enumerate() {
+            if byte_offset >= start && byte_offset < end {
+                highlights[idx] = true;
+            }
+        }
+    }
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut current = String::new();
+    let mut current_style: Option<Style> = None;
+    let mut char_index = 0usize;
+
+    for span in &line.spans {
+        for ch in span.content.chars() {
+            let mut style = span.style;
+            if highlights.get(char_index).copied().unwrap_or(false) {
+                style = style.patch(Style::new().bg(theme.search_bg).fg(theme.search_fg));
+            }
+            if current_style == Some(style) {
+                current.push(ch);
+            } else {
+                if !current.is_empty() {
+                    spans.push(Span::styled(current.clone(), current_style.unwrap_or_default()));
+                    current.clear();
+                }
+                current_style = Some(style);
+                current.push(ch);
+            }
+            char_index += 1;
+        }
+    }
+
+    if !current.is_empty() {
+        spans.push(Span::styled(current, current_style.unwrap_or_default()));
+    }
+
+    Line {
+        spans,
+        style: line.style,
+        alignment: line.alignment,
+    }
+}
+
+fn match_ranges(line: &str, query: &str) -> Vec<(usize, usize)> {
+    let hay = line.as_bytes();
+    let needle = query.as_bytes();
+    if needle.is_empty() || needle.len() > hay.len() {
+        return Vec::new();
+    }
+    let mut ranges = Vec::new();
+    for i in 0..=hay.len() - needle.len() {
+        let mut matched = true;
+        for j in 0..needle.len() {
+            if hay[i + j].to_ascii_lowercase() != needle[j].to_ascii_lowercase() {
+                matched = false;
+                break;
+            }
+        }
+        if matched {
+            ranges.push((i, i + needle.len()));
+        }
+    }
+    ranges
+}
+
+fn line_offsets(lines: &[Line<'static>], width: u16) -> Vec<u16> {
+    let mut offsets: Vec<u16> = Vec::with_capacity(lines.len());
+    let mut current: u16 = 0;
+    let width = width.max(1) as usize;
+    for line in lines {
+        offsets.push(current);
+        let line_width = line.width().max(1);
+        let wrapped = (line_width + width - 1) / width;
+        current = current.saturating_add(wrapped as u16);
+    }
+    offsets
 }

@@ -14,6 +14,8 @@ pub struct Theme {
     pub scrollbar_track: Color,
     pub beeline_start: Color,
     pub beeline_end: Color,
+    pub search_bg: Color,
+    pub search_fg: Color,
 }
 
 impl Theme {
@@ -31,6 +33,8 @@ impl Theme {
             scrollbar_track: Color::Rgb(210, 220, 230),
             beeline_start: Color::Rgb(170, 200, 230),
             beeline_end: Color::Rgb(230, 170, 200),
+            search_bg: Color::Rgb(255, 230, 170),
+            search_fg: Color::Rgb(60, 60, 60),
         }
     }
 }
