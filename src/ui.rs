@@ -31,6 +31,7 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
     let mut search_mode = false;
     let mut search_query = String::new();
     let mut search_matches: Vec<u16> = Vec::new();
+    let mut search_match_lines: Vec<usize> = Vec::new();
     let mut search_index: usize = 0;
 
     loop {
@@ -84,10 +85,12 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                     .collect();
                 if search_query.is_empty() {
                     search_matches.clear();
+                    search_match_lines.clear();
                     search_index = 0;
                 } else {
                     let match_lines = find_matches(&lines_text, &search_query);
                     let line_offsets = line_offsets(&lines, content_chunks[0].width);
+                    search_match_lines = match_lines.clone();
                     search_matches = match_lines
                         .iter()
                         .filter_map(|line_idx| line_offsets.get(*line_idx).copied())
@@ -97,7 +100,8 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                     }
                 }
                 if !search_query.is_empty() {
-                    lines = apply_search_highlight(&lines, &search_query, &theme);
+                    let current_line = search_match_lines.get(search_index).copied();
+                    lines = apply_search_highlight(&lines, &search_query, current_line, &theme);
                 }
                 let content = Text::from(lines.clone());
                 let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
@@ -184,6 +188,7 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                         search_mode = true;
                         search_query.clear();
                         search_matches.clear();
+                        search_match_lines.clear();
                         search_index = 0;
                     }
                     KeyCode::Enter if search_mode => {
@@ -196,6 +201,7 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                         search_mode = false;
                         search_query.clear();
                         search_matches.clear();
+                        search_match_lines.clear();
                         search_index = 0;
                     }
                     KeyCode::Esc if !search_mode => {
@@ -205,16 +211,19 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                         }
                         search_query.clear();
                         search_matches.clear();
+                        search_match_lines.clear();
                         search_index = 0;
                     }
                     KeyCode::Backspace if search_mode => {
                         search_query.pop();
                         search_matches.clear();
+                        search_match_lines.clear();
                         search_index = 0;
                     }
                     KeyCode::Char(c) if search_mode => {
                         search_query.push(c);
                         search_matches.clear();
+                        search_match_lines.clear();
                         search_index = 0;
                     }
                     KeyCode::Char('n') if !search_mode && !show_help => {
@@ -338,6 +347,7 @@ fn find_matches(lines: &[String], query: &str) -> Vec<usize> {
 fn apply_search_highlight(
     lines: &[Line<'static>],
     query: &str,
+    current_line: Option<usize>,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     if query.is_empty() {
@@ -345,13 +355,16 @@ fn apply_search_highlight(
     }
     lines
         .iter()
-        .map(|line| apply_search_highlight_line(line, query, theme))
+        .enumerate()
+        .map(|(idx, line)| apply_search_highlight_line(line, query, current_line, idx, theme))
         .collect()
 }
 
 fn apply_search_highlight_line(
     line: &Line<'static>,
     query: &str,
+    current_line: Option<usize>,
+    line_index: usize,
     theme: &Theme,
 ) -> Line<'static> {
     let line_text: String = line
@@ -383,7 +396,15 @@ fn apply_search_highlight_line(
         for ch in span.content.chars() {
             let mut style = span.style;
             if highlights.get(char_index).copied().unwrap_or(false) {
-                style = style.patch(Style::new().bg(theme.search_bg).fg(theme.search_fg));
+                let active = current_line == Some(line_index);
+                let highlight = if active {
+                    Style::new()
+                        .bg(theme.search_bg_active)
+                        .fg(theme.search_fg_active)
+                } else {
+                    Style::new().bg(theme.search_bg).fg(theme.search_fg)
+                };
+                style = style.patch(highlight);
             }
             if current_style == Some(style) {
                 current.push(ch);

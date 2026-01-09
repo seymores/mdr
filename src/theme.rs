@@ -16,6 +16,8 @@ pub struct Theme {
     pub beeline_end: Color,
     pub search_bg: Color,
     pub search_fg: Color,
+    pub search_bg_active: Color,
+    pub search_fg_active: Color,
 }
 
 impl Theme {
@@ -35,6 +37,8 @@ impl Theme {
             beeline_end: Color::Rgb(230, 170, 200),
             search_bg: Color::Rgb(255, 230, 170),
             search_fg: Color::Rgb(60, 60, 60),
+            search_bg_active: Color::Rgb(255, 200, 120),
+            search_fg_active: Color::Rgb(40, 40, 40),
         }
     }
 }
