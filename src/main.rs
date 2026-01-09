@@ -8,10 +8,21 @@ mod theme;
 mod ui;
 
 fn main() {
-    let path = match env::args().nth(1) {
+    let mut path: Option<String> = None;
+    let mut enable_beeline = true;
+
+    for arg in env::args().skip(1) {
+        if arg == "--no-beeline" {
+            enable_beeline = false;
+        } else if path.is_none() {
+            path = Some(arg);
+        }
+    }
+
+    let path = match path {
         Some(path) => path,
         None => {
-            eprintln!("Usage: mdr <path-to-markdown>");
+            eprintln!("Usage: mdr [--no-beeline] <path-to-markdown>");
             process::exit(2);
         }
     };
@@ -24,7 +35,7 @@ fn main() {
         }
     };
 
-    if let Err(err) = ui::run_tui(&path, &content) {
+    if let Err(err) = ui::run_tui(&path, &content, enable_beeline) {
         eprintln!("TUI error: {}", err);
         process::exit(1);
     }

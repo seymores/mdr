@@ -14,7 +14,7 @@ use crate::beeline::apply_beeline;
 use crate::markdown::{estimate_rendered_lines, render_markdown_to_lines};
 use crate::theme::Theme;
 
-pub fn run_tui(path: &str, markdown: &str) -> io::Result<()> {
+pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<()> {
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     enable_raw_mode()?;
@@ -51,7 +51,11 @@ pub fn run_tui(path: &str, markdown: &str) -> io::Result<()> {
                 .split(inner);
 
             let lines = render_markdown_to_lines(markdown, content_chunks[0].width, &theme);
-            let lines = apply_beeline(&lines, &theme);
+            let lines = if enable_beeline {
+                apply_beeline(&lines, &theme)
+            } else {
+                lines
+            };
             let content = Text::from(lines.clone());
             let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
             viewport_height = content_chunks[0].height;
@@ -83,7 +87,7 @@ pub fn run_tui(path: &str, markdown: &str) -> io::Result<()> {
                 .constraints([Constraint::Min(1), Constraint::Length(24)])
                 .split(chunks[1]);
 
-            let help = Line::raw("Up/Down, PgUp/PgDn, Home/End, j/k • q to quit")
+            let help = Line::raw("Up/Down, j/k, Space/Tab for page down, Shift+Tab for page up • q to quit")
                 .style(Style::new().fg(theme.footer).dim());
             frame.render_widget(Paragraph::new(help), footer_chunks[0]);
 
