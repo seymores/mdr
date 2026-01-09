@@ -13,6 +13,8 @@ A small TUI markdown reader for the terminal.
 
 ![Screenshot](docs/screenshot.png)
 
+![Screenshot](docs/help.png)
+
 ## Usage
 ```bash
 cargo run -- path/to/file.md

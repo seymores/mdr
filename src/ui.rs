@@ -194,6 +194,18 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                     }
                     KeyCode::Esc if search_mode => {
                         search_mode = false;
+                        search_query.clear();
+                        search_matches.clear();
+                        search_index = 0;
+                    }
+                    KeyCode::Esc if !search_mode => {
+                        if show_help {
+                            show_help = false;
+                            scroll = 0;
+                        }
+                        search_query.clear();
+                        search_matches.clear();
+                        search_index = 0;
                     }
                     KeyCode::Backspace if search_mode => {
                         search_query.pop();
