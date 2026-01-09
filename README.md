@@ -11,9 +11,6 @@ A small TUI markdown reader for the terminal.
 - Tables with column fitting and multi-line cell wrapping.
 - Scrollbar that hides when all content fits on screen.
 
-## Screenshot
-What it looks like.
-
 ![Screenshot](docs/screenshot.png)
 
 ## Usage
