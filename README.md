@@ -11,11 +11,9 @@ A small TUI markdown reader for the terminal.
 - Scrollbar that hides when all content fits on screen.
 
 ## Screenshot
-Add a screenshot of the UI here.
+What it looks like.
 
-```text
-screenshot: docs/screenshot.png
-```
+![Screenshot](docs/screenshot.png)
 
 ## Usage
 ```bash
