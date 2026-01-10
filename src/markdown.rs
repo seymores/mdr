@@ -599,7 +599,7 @@ code
 | 1 | 2 |
 "#;
         let theme = Theme::pastel();
-        let lines = render_markdown_to_lines(md, 80, &theme);
+        let lines = render_markdown_with_links(md, 80, &theme).0;
         let text: Vec<String> = lines.iter().map(line_text).collect();
 
         assert!(text.iter().any(|line| line == "Title"));

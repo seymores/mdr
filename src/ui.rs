@@ -54,6 +54,7 @@ struct AppState {
     search_index: usize,
     current_links: Vec<LinkTarget>,
     current_line_offsets: Vec<u16>,
+    current_wraps: Vec<LineWrap>,
     content_area: Rect,
     hover_link: Option<String>,
 }
@@ -73,6 +74,7 @@ impl AppState {
             search_index: 0,
             current_links: Vec::new(),
             current_line_offsets: Vec::new(),
+            current_wraps: Vec::new(),
             content_area: Rect::default(),
             hover_link: None,
         }
@@ -106,24 +108,26 @@ impl AppState {
             let help_lines = help_lines();
             self.render_lines(frame, &help_lines, content_chunks[0]);
         } else {
-            let mut lines = if self.plain_mode {
-                self.current_links.clear();
-                render_plain_lines(markdown)
-            } else {
-                let (lines, links) =
-                    render_markdown_with_links(markdown, content_chunks[0].width, theme);
-                self.current_links = links;
-                lines
-            };
+                let mut lines = if self.plain_mode {
+                    self.current_links.clear();
+                    render_plain_lines(markdown)
+                } else {
+                    let (lines, links) =
+                        render_markdown_with_links(markdown, content_chunks[0].width, theme);
+                    self.current_links = links;
+                    lines
+                };
             if self.beeline_enabled && !self.plain_mode {
                 lines = apply_beeline(&lines, theme);
             }
 
-            let lines_text: Vec<String> = lines
-                .iter()
-                .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-                .collect();
-            self.current_line_offsets = line_offsets(&lines, content_chunks[0].width);
+                let lines_text: Vec<String> = lines
+                    .iter()
+                    .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+                    .collect();
+                let (wraps, offsets) = build_wraps(&lines_text, content_chunks[0].width);
+                self.current_wraps = wraps;
+                self.current_line_offsets = offsets;
 
             if self.search_query.is_empty() {
                 reset_search(&mut self.search_query, &mut self.search_matches, &mut self.search_index);
@@ -131,6 +135,7 @@ impl AppState {
                 self.search_matches = build_search_matches(
                     &lines_text,
                     &self.search_query,
+                    &self.current_wraps,
                     &self.current_line_offsets,
                     content_chunks[0].width,
                 );
@@ -259,7 +264,6 @@ impl AppState {
                     KeyCode::Esc if !self.search_mode => {
                         if self.show_help {
                             self.show_help = false;
-                            self.scroll = 0;
                         }
                         reset_search(
                             &mut self.search_query,
@@ -299,7 +303,6 @@ impl AppState {
                     }
                     KeyCode::Char('h') => {
                         self.show_help = !self.show_help;
-                        self.scroll = 0;
                         if self.show_help {
                             self.search_mode = false;
                         }
@@ -335,9 +338,12 @@ impl AppState {
                         self.scroll = max_scroll;
                     }
                     KeyCode::Enter if !self.search_mode && !self.show_help => {
-                        if let Some(url) =
-                            link_at_scroll(&self.current_links, &self.current_line_offsets, self.scroll)
-                        {
+                        if let Some(url) = link_at_scroll(
+                            &self.current_links,
+                            &self.current_wraps,
+                            &self.current_line_offsets,
+                            self.scroll,
+                        ) {
                             let _ = open_url(&url);
                         }
                     }
@@ -351,6 +357,7 @@ impl AppState {
                         self.scroll = self.scroll.saturating_add(3).min(max_scroll);
                         self.hover_link = update_hover(
                             &self.current_links,
+                            &self.current_wraps,
                             &self.current_line_offsets,
                             self.content_area,
                             self.scroll,
@@ -362,6 +369,7 @@ impl AppState {
                         self.scroll = self.scroll.saturating_sub(3);
                         self.hover_link = update_hover(
                             &self.current_links,
+                            &self.current_wraps,
                             &self.current_line_offsets,
                             self.content_area,
                             self.scroll,
@@ -372,6 +380,7 @@ impl AppState {
                     MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                         self.hover_link = update_hover(
                             &self.current_links,
+                            &self.current_wraps,
                             &self.current_line_offsets,
                             self.content_area,
                             self.scroll,
@@ -392,6 +401,7 @@ impl AppState {
                             let local_x = mouse.column.saturating_sub(self.content_area.x);
                             self.hover_link = link_at_position(
                                 &self.current_links,
+                                &self.current_wraps,
                                 &self.current_line_offsets,
                                 self.content_area.width,
                                 rendered_line,
@@ -405,6 +415,7 @@ impl AppState {
                     MouseEventKind::Up(_) => {
                         self.hover_link = update_hover(
                             &self.current_links,
+                            &self.current_wraps,
                             &self.current_line_offsets,
                             self.content_area,
                             self.scroll,
@@ -428,6 +439,17 @@ struct SearchMatch {
     end: usize,
     start_char: usize,
     scroll_pos: u16,
+}
+
+#[derive(Clone)]
+struct LineWrap {
+    rows: Vec<RowRange>,
+}
+
+#[derive(Clone, Copy)]
+struct RowRange {
+    start: usize,
+    end: usize,
 }
 
 fn help_lines() -> Vec<Line<'static>> {
@@ -598,30 +620,17 @@ fn match_ranges(line: &str, query: &str) -> Vec<(usize, usize)> {
     ranges
 }
 
-fn line_offsets(lines: &[Line<'static>], width: u16) -> Vec<u16> {
-    let mut offsets: Vec<u16> = Vec::with_capacity(lines.len());
-    let mut current: u16 = 0;
-    let width = width.max(1) as usize;
-    for line in lines {
-        offsets.push(current);
-        let line_width = line.width().max(1);
-        let wrapped = (line_width + width - 1) / width;
-        current = current.saturating_add(wrapped as u16);
-    }
-    offsets
-}
-
 fn build_search_matches(
     lines: &[String],
     query: &str,
+    wraps: &[LineWrap],
     offsets: &[u16],
-    width: u16,
+    _width: u16,
 ) -> Vec<SearchMatch> {
-    let width = width.max(1) as usize;
     let mut matches = find_matches(lines, query);
     for m in &mut matches {
-        if let Some(&base) = offsets.get(m.line_idx) {
-            let row = (m.start_char / width) as u16;
+        if let (Some(&base), Some(wrap)) = (offsets.get(m.line_idx), wraps.get(m.line_idx)) {
+            let row = row_for_char(wrap, m.start_char).unwrap_or(0) as u16;
             m.scroll_pos = base.saturating_add(row);
         }
     }
@@ -654,14 +663,22 @@ fn line_from_rendered(offsets: &[u16], rendered_line: u16) -> Option<(usize, u16
         .map(|offset| (idx, rendered_line.saturating_sub(*offset)))
 }
 
-fn link_at_scroll(links: &[LinkTarget], offsets: &[u16], scroll: u16) -> Option<String> {
+fn link_at_scroll(
+    links: &[LinkTarget],
+    wraps: &[LineWrap],
+    offsets: &[u16],
+    scroll: u16,
+) -> Option<String> {
     if links.is_empty() {
         return None;
     }
     let mut best: Option<&LinkTarget> = None;
     for link in links {
-        if let Some(&offset) = offsets.get(link.line_idx) {
-            if offset >= scroll {
+        if let (Some(&offset), Some(wrap)) = (offsets.get(link.line_idx), wraps.get(link.line_idx))
+        {
+            let row = row_for_char(wrap, link.start_char).unwrap_or(0) as u16;
+            let pos = offset.saturating_add(row);
+            if pos >= scroll {
                 best = Some(link);
                 break;
             }
@@ -672,15 +689,20 @@ fn link_at_scroll(links: &[LinkTarget], offsets: &[u16], scroll: u16) -> Option<
 
 fn link_at_position(
     links: &[LinkTarget],
+    wraps: &[LineWrap],
     offsets: &[u16],
-    width: u16,
+    _width: u16,
     rendered_line: u16,
     column: u16,
 ) -> Option<String> {
     let (line_idx, row) = line_from_rendered(offsets, rendered_line)?;
-    let width = width.max(1) as usize;
+    let wrap = wraps.get(line_idx)?;
+    let row_range = wrap.rows.get(row as usize)?;
     let col = column as usize;
-    let char_index = row as usize * width + col;
+    let char_index = row_range.start + col;
+    if char_index >= row_range.end {
+        return None;
+    }
     links
         .iter()
         .find(|link| {
@@ -693,6 +715,7 @@ fn link_at_position(
 
 fn update_hover(
     links: &[LinkTarget],
+    wraps: &[LineWrap],
     offsets: &[u16],
     area: Rect,
     scroll: u16,
@@ -712,7 +735,7 @@ fn update_hover(
     let local_y = row.saturating_sub(area.y);
     let rendered_line = scroll.saturating_add(local_y);
     let local_x = column.saturating_sub(area.x);
-    link_at_position(links, offsets, area.width, rendered_line, local_x)
+    link_at_position(links, wraps, offsets, area.width, rendered_line, local_x)
 }
 
 fn open_url(url: &str) -> io::Result<()> {
@@ -735,4 +758,130 @@ fn open_url(url: &str) -> io::Result<()> {
         c
     };
     cmd.status().map(|_| ())
+}
+
+fn build_wraps(lines: &[String], width: u16) -> (Vec<LineWrap>, Vec<u16>) {
+    let width = width.max(1) as usize;
+    let mut wraps: Vec<LineWrap> = Vec::with_capacity(lines.len());
+    let mut offsets: Vec<u16> = Vec::with_capacity(lines.len());
+    let mut current: u16 = 0;
+
+    for line in lines {
+        offsets.push(current);
+        let wrap = wrap_line_ranges(line, width);
+        let rows = wrap.rows.len().max(1) as u16;
+        current = current.saturating_add(rows);
+        wraps.push(wrap);
+    }
+    (wraps, offsets)
+}
+
+fn wrap_line_ranges(line: &str, width: usize) -> LineWrap {
+    if line.is_empty() {
+        return LineWrap {
+            rows: vec![RowRange { start: 0, end: 0 }],
+        };
+    }
+    let chars: Vec<char> = line.chars().collect();
+    let mut tokens: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0usize;
+    let mut in_ws = chars[0].is_whitespace();
+    for (i, ch) in chars.iter().enumerate() {
+        let is_ws = ch.is_whitespace();
+        if is_ws != in_ws {
+            tokens.push((start, i));
+            start = i;
+            in_ws = is_ws;
+        }
+    }
+    tokens.push((start, chars.len()));
+
+    let mut rows: Vec<RowRange> = Vec::new();
+    let mut row_start = 0usize;
+    let mut row_len = 0usize;
+
+    for (tok_start, tok_end) in tokens {
+        let mut token_len = tok_end - tok_start;
+        let mut token_pos = tok_start;
+
+        loop {
+            let remaining = width.saturating_sub(row_len);
+            if token_len <= remaining {
+                if row_len == 0 {
+                    row_start = token_pos;
+                }
+                row_len += token_len;
+                break;
+            }
+            if row_len > 0 {
+                rows.push(RowRange {
+                    start: row_start,
+                    end: row_start + row_len,
+                });
+                row_len = 0;
+                continue;
+            }
+            let chunk_len = width.min(token_len).max(1);
+            rows.push(RowRange {
+                start: token_pos,
+                end: token_pos + chunk_len,
+            });
+            token_pos += chunk_len;
+            token_len -= chunk_len;
+            if token_len == 0 {
+                break;
+            }
+        }
+    }
+
+    if row_len > 0 {
+        rows.push(RowRange {
+            start: row_start,
+            end: row_start + row_len,
+        });
+    }
+
+    LineWrap { rows }
+}
+
+fn row_for_char(wrap: &LineWrap, char_idx: usize) -> Option<usize> {
+    wrap.rows
+        .iter()
+        .position(|row| char_idx >= row.start && char_idx < row.end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrap_ranges_and_link_hit_test() {
+        let text = String::from("abcd efghij");
+        let (wraps, offsets) = build_wraps(&[text.clone()], 5);
+        let links = vec![LinkTarget {
+            line_idx: 0,
+            start_char: 2,
+            end_char: 8,
+            url: "https://example.com".to_string(),
+        }];
+
+        let hit_row0 = link_at_position(&links, &wraps, &offsets, 5, 0, 2);
+        assert!(hit_row0.is_some());
+
+        let hit_row1 = link_at_position(&links, &wraps, &offsets, 5, 1, 1);
+        assert!(hit_row1.is_some());
+
+        let miss = link_at_position(&links, &wraps, &offsets, 5, 1, 4);
+        assert!(miss.is_none());
+    }
+
+    #[test]
+    fn search_matches_scroll_to_wrapped_row() {
+        let lines = vec![String::from("hello world")];
+        let (wraps, offsets) = build_wraps(&lines, 5);
+        let matches = build_search_matches(&lines, "world", &wraps, &offsets, 5);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].scroll_pos, 2);
+    }
 }
