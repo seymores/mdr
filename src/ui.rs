@@ -55,6 +55,7 @@ struct AppState {
     current_links: Vec<LinkTarget>,
     current_line_offsets: Vec<u16>,
     current_wraps: Vec<LineWrap>,
+    scroll_before_help: Option<u16>,
     content_area: Rect,
     hover_link: Option<String>,
 }
@@ -75,6 +76,7 @@ impl AppState {
             current_links: Vec::new(),
             current_line_offsets: Vec::new(),
             current_wraps: Vec::new(),
+            scroll_before_help: None,
             content_area: Rect::default(),
             hover_link: None,
         }
@@ -108,9 +110,12 @@ impl AppState {
             let help_lines = help_lines();
             self.render_lines(frame, &help_lines, content_chunks[0]);
         } else {
-                let mut lines = if self.plain_mode {
-                    self.current_links.clear();
-                    render_plain_lines(markdown)
+            if let Some(prev) = self.scroll_before_help.take() {
+                self.scroll = prev;
+            }
+            let mut lines = if self.plain_mode {
+                self.current_links.clear();
+                render_plain_lines(markdown)
                 } else {
                     let (lines, links) =
                         render_markdown_with_links(markdown, content_chunks[0].width, theme);
@@ -264,6 +269,7 @@ impl AppState {
                     KeyCode::Esc if !self.search_mode => {
                         if self.show_help {
                             self.show_help = false;
+                            self.scroll_before_help = Some(self.scroll);
                         }
                         reset_search(
                             &mut self.search_query,
@@ -303,6 +309,9 @@ impl AppState {
                     }
                     KeyCode::Char('h') => {
                         self.show_help = !self.show_help;
+                        if self.show_help {
+                            self.scroll_before_help = Some(self.scroll);
+                        }
                         if self.show_help {
                             self.search_mode = false;
                         }
