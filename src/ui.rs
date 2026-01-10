@@ -3,7 +3,13 @@ use std::process::Command;
 
 use crossterm::event::{self, Event, KeyCode, MouseButton, MouseEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::{execute, event::DisableMouseCapture, event::EnableMouseCapture};
+use crossterm::{
+    execute,
+    event::DisableFocusChange,
+    event::DisableMouseCapture,
+    event::EnableFocusChange,
+    event::EnableMouseCapture,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
@@ -19,8 +25,8 @@ use crate::theme::Theme;
 
 pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<()> {
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     enable_raw_mode()?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableFocusChange)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let theme = Theme::pastel();
@@ -36,7 +42,12 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
     }
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        DisableFocusChange,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     Ok(())
 }
@@ -58,6 +69,7 @@ struct AppState {
     scroll_before_help: Option<u16>,
     content_area: Rect,
     hover_link: Option<String>,
+    last_mouse_pos: Option<(u16, u16)>,
 }
 
 impl AppState {
@@ -79,6 +91,7 @@ impl AppState {
             scroll_before_help: None,
             content_area: Rect::default(),
             hover_link: None,
+            last_mouse_pos: None,
         }
     }
 
@@ -135,7 +148,7 @@ impl AppState {
                 self.current_line_offsets = offsets;
 
             if self.search_query.is_empty() {
-                reset_search(&mut self.search_query, &mut self.search_matches, &mut self.search_index);
+                self.clear_search_state();
             } else {
                 self.search_matches = build_search_matches(
                     &lines_text,
@@ -236,7 +249,7 @@ impl AppState {
     fn handle_event(
         &mut self,
         event: Event,
-        _terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     ) -> io::Result<bool> {
         match event {
             Event::Key(key) => {
@@ -246,11 +259,7 @@ impl AppState {
                     KeyCode::Char('q') => return Ok(true),
                     KeyCode::Char('/') if !self.show_help => {
                         self.search_mode = true;
-                        reset_search(
-                            &mut self.search_query,
-                            &mut self.search_matches,
-                            &mut self.search_index,
-                        );
+                        self.clear_search_state();
                     }
                     KeyCode::Enter if self.search_mode => {
                         self.search_mode = false;
@@ -260,32 +269,22 @@ impl AppState {
                     }
                     KeyCode::Esc if self.search_mode => {
                         self.search_mode = false;
-                        reset_search(
-                            &mut self.search_query,
-                            &mut self.search_matches,
-                            &mut self.search_index,
-                        );
+                        self.clear_search_state();
                     }
                     KeyCode::Esc if !self.search_mode => {
                         if self.show_help {
                             self.show_help = false;
                             self.scroll_before_help = Some(self.scroll);
                         }
-                        reset_search(
-                            &mut self.search_query,
-                            &mut self.search_matches,
-                            &mut self.search_index,
-                        );
+                        self.clear_search_state();
                     }
                     KeyCode::Backspace if self.search_mode => {
                         self.search_query.pop();
-                        self.search_matches.clear();
-                        self.search_index = 0;
+                        self.reset_search_matches();
                     }
                     KeyCode::Char(c) if self.search_mode => {
                         self.search_query.push(c);
-                        self.search_matches.clear();
-                        self.search_index = 0;
+                        self.reset_search_matches();
                     }
                     KeyCode::Char('n') if !self.search_mode && !self.show_help => {
                         if !self.search_matches.is_empty() {
@@ -360,6 +359,7 @@ impl AppState {
                 }
             }
             Event::Mouse(mouse) => {
+                self.last_mouse_pos = Some((mouse.column, mouse.row));
                 let max_scroll = self.rendered_lines.saturating_sub(self.viewport_height);
                 match mouse.kind {
                     MouseEventKind::ScrollDown => {
@@ -435,9 +435,37 @@ impl AppState {
                     _ => {}
                 }
             }
+            Event::FocusGained => {
+                let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
+                if let Some((col, row)) = self.last_mouse_pos {
+                    self.hover_link = update_hover(
+                        &self.current_links,
+                        &self.current_wraps,
+                        &self.current_line_offsets,
+                        self.content_area,
+                        self.scroll,
+                        col,
+                        row,
+                    );
+                }
+            }
+            Event::FocusLost => {
+                self.hover_link = None;
+            }
             _ => {}
         }
         Ok(false)
+    }
+
+    fn clear_search_state(&mut self) {
+        self.search_query.clear();
+        self.search_matches.clear();
+        self.search_index = 0;
+    }
+
+    fn reset_search_matches(&mut self) {
+        self.search_matches.clear();
+        self.search_index = 0;
     }
 }
 
@@ -646,11 +674,6 @@ fn build_search_matches(
     matches
 }
 
-fn reset_search(query: &mut String, matches: &mut Vec<SearchMatch>, index: &mut usize) {
-    query.clear();
-    matches.clear();
-    *index = 0;
-}
 
 fn line_from_rendered(offsets: &[u16], rendered_line: u16) -> Option<(usize, u16)> {
     if offsets.is_empty() {
