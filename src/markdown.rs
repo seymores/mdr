@@ -1,8 +1,16 @@
-use pulldown_cmark::{Event as MdEvent, Options, Parser, Tag, TagEnd};
-use ratatui::style::{Modifier, Style};
+use once_cell::sync::Lazy;
+use pulldown_cmark::{CodeBlockKind, Event as MdEvent, Options, Parser, Tag, TagEnd};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{ThemeSet};
+use syntect::parsing::SyntaxSet;
+use syntect::util::LinesWithEndings;
 
 use crate::theme::Theme;
+
+static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
+static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
 
 #[derive(Clone, Debug)]
 pub struct LinkTarget {
@@ -46,6 +54,8 @@ pub fn render_markdown_with_links(
     let mut current_link_start: usize = 0;
     let mut current_link_has_text = false;
     let link_style = Style::new().fg(theme.link).add_modifier(Modifier::UNDERLINED);
+    let mut code_block_language: Option<String> = None;
+    let mut code_block_text = String::new();
 
     let flush_line =
         |lines: &mut Vec<Line<'static>>, current: &mut Vec<Span<'static>>, count: &mut usize| {
@@ -255,23 +265,38 @@ pub fn render_markdown_with_links(
             MdEvent::End(TagEnd::Strikethrough) => {
                 current_style = style_stack.pop().unwrap_or_default();
             }
-            MdEvent::Start(Tag::CodeBlock(_)) => {
+            MdEvent::Start(Tag::CodeBlock(kind)) => {
                 flush_line(&mut lines, &mut current, &mut current_line_chars);
                 push_blank(&mut lines, &mut current_line_chars);
                 in_code_block = true;
+                code_block_text.clear();
+                code_block_language = match kind {
+                    CodeBlockKind::Fenced(lang) => {
+                        let lang = lang.trim();
+                        if lang.is_empty() {
+                            None
+                        } else {
+                            Some(lang.to_string())
+                        }
+                    }
+                    CodeBlockKind::Indented => None,
+                };
             }
             MdEvent::End(TagEnd::CodeBlock) => {
                 in_code_block = false;
+                render_code_block(
+                    &mut lines,
+                    &code_block_text,
+                    code_block_language.as_deref(),
+                    theme,
+                );
+                code_block_text.clear();
+                code_block_language = None;
                 lines.push(Line::raw(""));
             }
             MdEvent::Text(text) => {
                 if in_code_block {
-                    for line in text.split('\n') {
-                        lines.push(Line::from(Span::styled(
-                            format!("    {}", line),
-                            code_style,
-                        )));
-                    }
+                    code_block_text.push_str(&text);
                 } else {
                     if in_blockquote && current.is_empty() {
                         push_span(
@@ -322,10 +347,18 @@ pub fn render_markdown_with_links(
                 );
             }
             MdEvent::SoftBreak => {
-                push_span(&mut current, &mut current_line_chars, Span::raw(" "))
+                if in_code_block {
+                    code_block_text.push('\n');
+                } else {
+                    push_span(&mut current, &mut current_line_chars, Span::raw(" "));
+                }
             }
             MdEvent::HardBreak => {
-                flush_line(&mut lines, &mut current, &mut current_line_chars);
+                if in_code_block {
+                    code_block_text.push('\n');
+                } else {
+                    flush_line(&mut lines, &mut current, &mut current_line_chars);
+                }
             }
             MdEvent::Rule => {
                 push_blank(&mut lines, &mut current_line_chars);
@@ -508,6 +541,38 @@ fn pad_row(row: &mut Vec<String>, columns: usize) {
         return;
     }
     row.extend(std::iter::repeat(String::new()).take(columns - row.len()));
+}
+
+fn render_code_block(
+    lines: &mut Vec<Line<'static>>,
+    code: &str,
+    language: Option<&str>,
+    _theme: &Theme,
+) {
+    if code.is_empty() {
+        return;
+    }
+    let fallback = Style::new().fg(Color::Rgb(230, 230, 230));
+    let syntax = language
+        .and_then(|lang| SYNTAX_SET.find_syntax_by_token(lang))
+        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
+    let syn_theme = &THEME_SET.themes["base16-ocean.dark"];
+    let mut highlighter = HighlightLines::new(syntax, syn_theme);
+
+    for line in LinesWithEndings::from(code) {
+        let line_input = line.trim_end_matches('\n');
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        spans.push(Span::styled("    ", fallback));
+        if let Ok(ranges) = highlighter.highlight_line(line_input, &SYNTAX_SET) {
+            for (style, text) in ranges {
+                let fg = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
+                spans.push(Span::styled(text.to_string(), Style::new().fg(fg)));
+            }
+        } else {
+            spans.push(Span::styled(line_input.to_string(), fallback));
+        }
+        lines.push(Line::from(spans));
+    }
 }
 
 #[cfg(test)]
