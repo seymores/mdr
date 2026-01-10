@@ -1,6 +1,13 @@
 # mdr
 
-A small TUI markdown reader for the terminal.
+A small, fast TUI markdown reader for the terminal.
+
+![Screenshot](docs/screenshot.png)
+
+## Why mdr
+- Clean pastel theme with BeeLine gradients for line tracking.
+- Mouse scroll + hover URL previews, keyboard-first navigation.
+- Solid markdown coverage including tables and code blocks.
 
 ## Features
 - Terminal UI with a pastel color theme.
@@ -13,8 +20,6 @@ A small TUI markdown reader for the terminal.
 - Scrollbar that hides when all content fits on screen.
 - Search with `/`, next/prev via `n`/`N`, and match highlighting (current match emphasized).
 - Links are underlined and colored; press Enter to open the nearest link.
-
-![Screenshot](docs/screenshot.png)
 
 ![Help Screenshot](docs/help.png)
 
@@ -31,6 +36,28 @@ cargo run -- --no-beeline path/to/file.md
 Install a local release build:
 ```bash
 cargo install --path . --locked
+```
+
+## Key Bindings
+- `Up/Down`: Scroll line by line
+- `Space` or `Tab`: Page down
+- `Backtab`: Page up
+- `/`: Search
+- `n` / `N`: Next / previous match
+- `b`: Toggle BeeLine
+- `m`: Toggle plain mode
+- `h`: Help
+- `q`: Quit
+- `Enter`: Open nearest link
+
+## Install
+```bash
+cargo install --path . --locked
+```
+
+## Build
+```bash
+cargo build --release
 ```
 
 ## Notes

@@ -46,6 +46,7 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
                 if state.handle_event(event, &mut terminal)? {
                     break;
                 }
+                execute!(terminal.backend_mut(), DisableMouseCapture, EnableMouseCapture)?;
                 state.priming_mode = false;
             } else {
                 execute!(terminal.backend_mut(), DisableMouseCapture, EnableMouseCapture)?;
