@@ -37,25 +37,25 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
     let theme = Theme::pastel();
 
     let mut state = AppState::new(enable_beeline);
-    let mut mouse_primed = false;
 
     loop {
         terminal.draw(|frame| state.render(frame, path, markdown, &theme))?;
-        if !mouse_primed {
+        if state.priming_mode {
             if event::poll(Duration::from_millis(80))? {
                 let event = event::read()?;
                 if state.handle_event(event, &mut terminal)? {
                     break;
                 }
+                state.priming_mode = false;
             } else {
                 execute!(terminal.backend_mut(), DisableMouseCapture, EnableMouseCapture)?;
-                mouse_primed = true;
+                state.priming_mode = false;
             }
-            continue;
-        }
-        let event = event::read()?;
-        if state.handle_event(event, &mut terminal)? {
-            break;
+        } else {
+            let event = event::read()?;
+            if state.handle_event(event, &mut terminal)? {
+                break;
+            }
         }
     }
 
@@ -89,6 +89,7 @@ struct AppState {
     content_area: Rect,
     hover_link: Option<String>,
     last_mouse_pos: Option<(u16, u16)>,
+    priming_mode: bool,
 }
 
 impl AppState {
@@ -112,6 +113,124 @@ impl AppState {
             content_area: Rect::default(),
             hover_link: None,
             last_mouse_pos: None,
+            priming_mode: true,
+        }
+    }
+
+    fn close_help(&mut self) {
+        if self.show_help {
+            self.show_help = false;
+        }
+    }
+
+    fn handle_key_input(&mut self, code: KeyCode, max_scroll: u16, page: u16) -> KeyAction {
+        match code {
+            KeyCode::Char('q') => KeyAction::Quit,
+            KeyCode::Char('/') if !self.show_help => {
+                self.search_mode = true;
+                self.clear_search_state();
+                KeyAction::None
+            }
+            KeyCode::Enter if self.search_mode => {
+                self.search_mode = false;
+                if let Some(pos) = self.search_matches.first().map(|m| m.scroll_pos) {
+                    self.scroll = pos.min(max_scroll);
+                }
+                KeyAction::None
+            }
+            KeyCode::Esc if self.search_mode => {
+                self.search_mode = false;
+                self.clear_search_state();
+                KeyAction::None
+            }
+            KeyCode::Esc if !self.search_mode => {
+                self.close_help();
+                self.clear_search_state();
+                KeyAction::None
+            }
+            KeyCode::Backspace if self.search_mode => {
+                self.search_query.pop();
+                self.reset_search_matches();
+                KeyAction::None
+            }
+            KeyCode::Char(c) if self.search_mode => {
+                self.search_query.push(c);
+                self.reset_search_matches();
+                KeyAction::None
+            }
+            KeyCode::Char('n') if !self.search_mode && !self.show_help => {
+                if !self.search_matches.is_empty() {
+                    self.search_index = (self.search_index + 1) % self.search_matches.len();
+                    self.scroll = self.search_matches[self.search_index]
+                        .scroll_pos
+                        .min(max_scroll);
+                }
+                KeyAction::None
+            }
+            KeyCode::Char('N') if !self.search_mode && !self.show_help => {
+                if !self.search_matches.is_empty() {
+                    if self.search_index == 0 {
+                        self.search_index = self.search_matches.len() - 1;
+                    } else {
+                        self.search_index -= 1;
+                    }
+                    self.scroll = self.search_matches[self.search_index]
+                        .scroll_pos
+                        .min(max_scroll);
+                }
+                KeyAction::None
+            }
+            KeyCode::Char('h') => {
+                self.show_help = !self.show_help;
+                if self.show_help {
+                    self.scroll_before_help = Some(self.scroll);
+                    self.search_mode = false;
+                    self.hover_link = None;
+                }
+                KeyAction::None
+            }
+            KeyCode::Char('b') => {
+                self.beeline_enabled = !self.beeline_enabled;
+                KeyAction::None
+            }
+            KeyCode::Char('m') => {
+                self.plain_mode = !self.plain_mode;
+                KeyAction::None
+            }
+            KeyCode::Down => {
+                self.scroll = self.scroll.saturating_add(1);
+                KeyAction::None
+            }
+            KeyCode::Up => {
+                self.scroll = self.scroll.saturating_sub(1);
+                KeyAction::None
+            }
+            KeyCode::PageDown => {
+                self.scroll = self.scroll.saturating_add(page);
+                KeyAction::None
+            }
+            KeyCode::PageUp => {
+                self.scroll = self.scroll.saturating_sub(page);
+                KeyAction::None
+            }
+            KeyCode::Char(' ') | KeyCode::Tab => {
+                self.scroll = self.scroll.saturating_add(page);
+                KeyAction::None
+            }
+            KeyCode::BackTab => {
+                self.scroll = self.scroll.saturating_sub(page);
+                KeyAction::None
+            }
+            KeyCode::Home => {
+                self.scroll = 0;
+                KeyAction::None
+            }
+            KeyCode::End => {
+                self.scroll = max_scroll;
+                KeyAction::None
+            }
+            KeyCode::Enter if !self.search_mode && !self.show_help => KeyAction::OpenLink,
+            _ => KeyAction::None,
         }
     }
 
@@ -141,7 +260,7 @@ impl AppState {
 
         if self.show_help {
             let help_lines = help_lines();
-            self.render_lines(frame, &help_lines, content_chunks[0]);
+            self.render_lines_with_scroll(frame, &help_lines, content_chunks[0], 0);
         } else {
             if let Some(prev) = self.scroll_before_help.take() {
                 self.scroll = prev;
@@ -255,15 +374,27 @@ impl AppState {
     }
 
     fn render_lines(&mut self, frame: &mut ratatui::Frame, lines: &[Line<'static>], area: Rect) {
+        self.render_lines_with_scroll(frame, lines, area, self.scroll);
+        let max_scroll = self.rendered_lines.saturating_sub(self.viewport_height);
+        if self.scroll > max_scroll {
+            self.scroll = max_scroll;
+        }
+    }
+
+    fn render_lines_with_scroll(
+        &mut self,
+        frame: &mut ratatui::Frame,
+        lines: &[Line<'static>],
+        area: Rect,
+        scroll: u16,
+    ) {
         let content = Text::from(lines.to_vec());
         let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
         self.viewport_height = area.height;
         self.rendered_lines = estimate_rendered_lines(lines, area.width);
         let max_scroll = self.rendered_lines.saturating_sub(self.viewport_height);
-        if self.scroll > max_scroll {
-            self.scroll = max_scroll;
-        }
-        let paragraph = paragraph.scroll((self.scroll, 0));
+        let scroll = scroll.min(max_scroll);
+        let paragraph = paragraph.scroll((scroll, 0));
         frame.render_widget(paragraph, area);
     }
 
@@ -276,97 +407,9 @@ impl AppState {
             Event::Key(key) => {
                 let page = self.viewport_height.saturating_sub(1).max(1);
                 let max_scroll = self.rendered_lines.saturating_sub(self.viewport_height);
-                match key.code {
-                    KeyCode::Char('q') => return Ok(true),
-                    KeyCode::Char('/') if !self.show_help => {
-                        self.search_mode = true;
-                        self.clear_search_state();
-                    }
-                    KeyCode::Enter if self.search_mode => {
-                        self.search_mode = false;
-                        if let Some(pos) = self.search_matches.first().map(|m| m.scroll_pos) {
-                            self.scroll = pos.min(max_scroll);
-                        }
-                    }
-                    KeyCode::Esc if self.search_mode => {
-                        self.search_mode = false;
-                        self.clear_search_state();
-                    }
-                    KeyCode::Esc if !self.search_mode => {
-                        if self.show_help {
-                            self.show_help = false;
-                            self.scroll_before_help = Some(self.scroll);
-                        }
-                        self.clear_search_state();
-                    }
-                    KeyCode::Backspace if self.search_mode => {
-                        self.search_query.pop();
-                        self.reset_search_matches();
-                    }
-                    KeyCode::Char(c) if self.search_mode => {
-                        self.search_query.push(c);
-                        self.reset_search_matches();
-                    }
-                    KeyCode::Char('n') if !self.search_mode && !self.show_help => {
-                        if !self.search_matches.is_empty() {
-                            self.search_index = (self.search_index + 1) % self.search_matches.len();
-                            self.scroll = self.search_matches[self.search_index]
-                                .scroll_pos
-                                .min(max_scroll);
-                        }
-                    }
-                    KeyCode::Char('N') if !self.search_mode && !self.show_help => {
-                        if !self.search_matches.is_empty() {
-                            if self.search_index == 0 {
-                                self.search_index = self.search_matches.len() - 1;
-                            } else {
-                                self.search_index -= 1;
-                            }
-                            self.scroll = self.search_matches[self.search_index]
-                                .scroll_pos
-                                .min(max_scroll);
-                        }
-                    }
-                    KeyCode::Char('h') => {
-                        self.show_help = !self.show_help;
-                        if self.show_help {
-                            self.scroll_before_help = Some(self.scroll);
-                        }
-                        if self.show_help {
-                            self.search_mode = false;
-                        }
-                    }
-                    KeyCode::Char('b') => {
-                        self.beeline_enabled = !self.beeline_enabled;
-                    }
-                    KeyCode::Char('m') => {
-                        self.plain_mode = !self.plain_mode;
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        self.scroll = self.scroll.saturating_add(1);
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.scroll = self.scroll.saturating_sub(1);
-                    }
-                    KeyCode::PageDown => {
-                        self.scroll = self.scroll.saturating_add(page);
-                    }
-                    KeyCode::PageUp => {
-                        self.scroll = self.scroll.saturating_sub(page);
-                    }
-                    KeyCode::Char(' ') | KeyCode::Tab => {
-                        self.scroll = self.scroll.saturating_add(page);
-                    }
-                    KeyCode::BackTab => {
-                        self.scroll = self.scroll.saturating_sub(page);
-                    }
-                    KeyCode::Home => {
-                        self.scroll = 0;
-                    }
-                    KeyCode::End => {
-                        self.scroll = max_scroll;
-                    }
-                    KeyCode::Enter if !self.search_mode && !self.show_help => {
+                match self.handle_key_input(key.code, max_scroll, page) {
+                    KeyAction::Quit => return Ok(true),
+                    KeyAction::OpenLink => {
                         if let Some(url) = link_at_scroll(
                             &self.current_links,
                             &self.current_wraps,
@@ -376,7 +419,7 @@ impl AppState {
                             let _ = open_url(&url);
                         }
                     }
-                    _ => {}
+                    KeyAction::None => {}
                 }
             }
             Event::Mouse(mouse) => {
@@ -385,41 +428,47 @@ impl AppState {
                 match mouse.kind {
                     MouseEventKind::ScrollDown => {
                         self.scroll = self.scroll.saturating_add(3).min(max_scroll);
-                        self.hover_link = update_hover(
-                            &self.current_links,
-                            &self.current_wraps,
-                            &self.current_line_offsets,
-                            &self.current_lines_text,
-                            self.content_area,
-                            self.scroll,
-                            mouse.column,
-                            mouse.row,
-                        );
+                        if !self.show_help {
+                            self.hover_link = update_hover(
+                                &self.current_links,
+                                &self.current_wraps,
+                                &self.current_line_offsets,
+                                &self.current_lines_text,
+                                self.content_area,
+                                self.scroll,
+                                mouse.column,
+                                mouse.row,
+                            );
+                        }
                     }
                     MouseEventKind::ScrollUp => {
                         self.scroll = self.scroll.saturating_sub(3);
-                        self.hover_link = update_hover(
-                            &self.current_links,
-                            &self.current_wraps,
-                            &self.current_line_offsets,
-                            &self.current_lines_text,
-                            self.content_area,
-                            self.scroll,
-                            mouse.column,
-                            mouse.row,
-                        );
+                        if !self.show_help {
+                            self.hover_link = update_hover(
+                                &self.current_links,
+                                &self.current_wraps,
+                                &self.current_line_offsets,
+                                &self.current_lines_text,
+                                self.content_area,
+                                self.scroll,
+                                mouse.column,
+                                mouse.row,
+                            );
+                        }
                     }
                     MouseEventKind::Moved | MouseEventKind::Drag(_) => {
-                        self.hover_link = update_hover(
-                            &self.current_links,
-                            &self.current_wraps,
-                            &self.current_line_offsets,
-                            &self.current_lines_text,
-                            self.content_area,
-                            self.scroll,
-                            mouse.column,
-                            mouse.row,
-                        );
+                        if !self.show_help {
+                            self.hover_link = update_hover(
+                                &self.current_links,
+                                &self.current_wraps,
+                                &self.current_line_offsets,
+                                &self.current_lines_text,
+                                self.content_area,
+                                self.scroll,
+                                mouse.column,
+                                mouse.row,
+                            );
+                        }
                     }
                     MouseEventKind::Down(MouseButton::Left) => {
                         if !self.show_help
@@ -446,16 +495,18 @@ impl AppState {
                         }
                     }
                     MouseEventKind::Up(_) => {
-                        self.hover_link = update_hover(
-                            &self.current_links,
-                            &self.current_wraps,
-                            &self.current_line_offsets,
-                            &self.current_lines_text,
-                            self.content_area,
-                            self.scroll,
-                            mouse.column,
-                            mouse.row,
-                        );
+                        if !self.show_help {
+                            self.hover_link = update_hover(
+                                &self.current_links,
+                                &self.current_wraps,
+                                &self.current_line_offsets,
+                                &self.current_lines_text,
+                                self.content_area,
+                                self.scroll,
+                                mouse.column,
+                                mouse.row,
+                            );
+                        }
                     }
                     _ => {}
                 }
@@ -519,6 +570,12 @@ struct SearchMatch {
     end: usize,
     start_char: usize,
     scroll_pos: u16,
+}
+
+enum KeyAction {
+    None,
+    Quit,
+    OpenLink,
 }
 
 #[derive(Clone)]
@@ -997,5 +1054,64 @@ mod tests {
 
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].scroll_pos, 2);
+    }
+
+    #[test]
+    fn esc_closes_help_without_overwriting_scroll_restore() {
+        let mut state = AppState::new(true);
+        state.scroll = 12;
+        state.show_help = true;
+        state.scroll_before_help = Some(12);
+
+        let action = state.handle_key_input(KeyCode::Esc, 100, 10);
+
+        assert!(matches!(action, KeyAction::None));
+        assert!(!state.show_help);
+        assert_eq!(state.scroll, 12);
+        assert_eq!(state.scroll_before_help, Some(12));
+    }
+
+    #[test]
+    fn enter_without_search_requests_link_open() {
+        let mut state = AppState::new(true);
+        state.search_mode = false;
+        state.show_help = false;
+
+        let action = state.handle_key_input(KeyCode::Enter, 100, 10);
+
+        assert!(matches!(action, KeyAction::OpenLink));
+    }
+
+    #[test]
+    fn help_toggle_records_scroll_and_clears_hover() {
+        let mut state = AppState::new(true);
+        state.scroll = 7;
+        state.hover_link = Some("https://example.com".to_string());
+
+        let action = state.handle_key_input(KeyCode::Char('h'), 100, 10);
+
+        assert!(matches!(action, KeyAction::None));
+        assert!(state.show_help);
+        assert_eq!(state.scroll_before_help, Some(7));
+        assert!(state.hover_link.is_none());
+    }
+
+    #[test]
+    fn search_enter_jumps_to_first_match() {
+        let mut state = AppState::new(true);
+        state.search_mode = true;
+        state.search_matches = vec![SearchMatch {
+            line_idx: 0,
+            start: 0,
+            end: 4,
+            start_char: 0,
+            scroll_pos: 9,
+        }];
+
+        let action = state.handle_key_input(KeyCode::Enter, 100, 10);
+
+        assert!(matches!(action, KeyAction::None));
+        assert!(!state.search_mode);
+        assert_eq!(state.scroll, 9);
     }
 }
