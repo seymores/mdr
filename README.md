@@ -4,13 +4,15 @@ A small TUI markdown reader for the terminal.
 
 ## Features
 - Terminal UI with a pastel color theme.
-- BeeLine-style gradient for easier line tracking (disable with `--no-beeline`).
-- Keyboard navigation: Up/Down, Space for page down, `h` for commands.
-- Mouse wheel scrolling.
+- BeeLine-style gradient for easier line tracking (disable with `--no-beeline`, toggle with `b`).
+- Plain mode toggle (`m`) for minimal styling.
+- Keyboard navigation: Up/Down, Space or Tab for page down, `h` for commands.
+- Mouse wheel scrolling and hover to show link URLs.
 - Basic markdown styling for headings, lists, emphasis, inline code, blockquotes, and rules.
-- Tables with column fitting and multi-line cell wrapping.
+- Tables with column fitting and multi-line cell wrapping (headers preserved).
 - Scrollbar that hides when all content fits on screen.
-- Search with `/`, next/prev via `n`/`N`, and match highlighting.
+- Search with `/`, next/prev via `n`/`N`, and match highlighting (current match emphasized).
+- Links are underlined and colored; press Enter to open the nearest link.
 
 ![Screenshot](docs/screenshot.png)
 
@@ -24,6 +26,11 @@ cargo run -- path/to/file.md
 Disable BeeLine styling:
 ```bash
 cargo run -- --no-beeline path/to/file.md
+```
+
+Install a local release build:
+```bash
+cargo install --path . --locked
 ```
 
 ## Notes
