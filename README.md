@@ -1,13 +1,8 @@
 # mdr
 
-A small, fast TUI markdown reader for the terminal.
+A small, fast TUI markdown reader for the terminal. Clean pastel theme with BeeLine gradients for line tracking, mouse scroll + hover URL previews, keyboard-first navigation, and solid markdown coverage including tables and code blocks.
 
 ![Screenshot](docs/screenshot.png)
-
-## Why mdr
-- Clean pastel theme with BeeLine gradients for line tracking.
-- Mouse scroll + hover URL previews, keyboard-first navigation.
-- Solid markdown coverage including tables and code blocks.
 
 ## Features
 - Terminal UI with a pastel color theme.
