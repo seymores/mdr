@@ -1,5 +1,6 @@
 use std::io;
 use std::process::Command;
+use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, MouseButton, MouseEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
@@ -16,6 +17,7 @@ use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 use ratatui::Terminal;
+use unicode_width::UnicodeWidthChar;
 
 use crate::beeline::apply_beeline;
 use crate::markdown::{
@@ -26,15 +28,31 @@ use crate::theme::Theme;
 pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<()> {
     let mut stdout = io::stdout();
     enable_raw_mode()?;
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableFocusChange)?;
+    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnableMouseCapture, EnableFocusChange)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    execute!(terminal.backend_mut(), DisableMouseCapture)?;
+    execute!(terminal.backend_mut(), EnableMouseCapture, EnableFocusChange)?;
     let theme = Theme::pastel();
 
     let mut state = AppState::new(enable_beeline);
+    let mut mouse_primed = false;
 
     loop {
         terminal.draw(|frame| state.render(frame, path, markdown, &theme))?;
+        if !mouse_primed {
+            if event::poll(Duration::from_millis(80))? {
+                let event = event::read()?;
+                if state.handle_event(event, &mut terminal)? {
+                    break;
+                }
+            } else {
+                execute!(terminal.backend_mut(), DisableMouseCapture, EnableMouseCapture)?;
+                mouse_primed = true;
+            }
+            continue;
+        }
         let event = event::read()?;
         if state.handle_event(event, &mut terminal)? {
             break;
@@ -66,6 +84,7 @@ struct AppState {
     current_links: Vec<LinkTarget>,
     current_line_offsets: Vec<u16>,
     current_wraps: Vec<LineWrap>,
+    current_lines_text: Vec<String>,
     scroll_before_help: Option<u16>,
     content_area: Rect,
     hover_link: Option<String>,
@@ -88,6 +107,7 @@ impl AppState {
             current_links: Vec::new(),
             current_line_offsets: Vec::new(),
             current_wraps: Vec::new(),
+            current_lines_text: Vec::new(),
             scroll_before_help: None,
             content_area: Rect::default(),
             hover_link: None,
@@ -129,29 +149,30 @@ impl AppState {
             let mut lines = if self.plain_mode {
                 self.current_links.clear();
                 render_plain_lines(markdown)
-                } else {
-                    let (lines, links) =
-                        render_markdown_with_links(markdown, content_chunks[0].width, theme);
-                    self.current_links = links;
-                    lines
-                };
+            } else {
+                let (lines, links) =
+                    render_markdown_with_links(markdown, content_chunks[0].width, theme);
+                self.current_links = links;
+                lines
+            };
             if self.beeline_enabled && !self.plain_mode {
                 lines = apply_beeline(&lines, theme);
             }
 
-                let lines_text: Vec<String> = lines
-                    .iter()
-                    .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-                    .collect();
-                let (wraps, offsets) = build_wraps(&lines_text, content_chunks[0].width);
-                self.current_wraps = wraps;
-                self.current_line_offsets = offsets;
+            let lines_text: Vec<String> = lines
+                .iter()
+                .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+                .collect();
+            self.current_lines_text = lines_text;
+            let (wraps, offsets) = build_wraps(&self.current_lines_text, content_chunks[0].width);
+            self.current_wraps = wraps;
+            self.current_line_offsets = offsets;
 
             if self.search_query.is_empty() {
                 self.clear_search_state();
             } else {
                 self.search_matches = build_search_matches(
-                    &lines_text,
+                    &self.current_lines_text,
                     &self.search_query,
                     &self.current_wraps,
                     &self.current_line_offsets,
@@ -368,6 +389,7 @@ impl AppState {
                             &self.current_links,
                             &self.current_wraps,
                             &self.current_line_offsets,
+                            &self.current_lines_text,
                             self.content_area,
                             self.scroll,
                             mouse.column,
@@ -380,6 +402,7 @@ impl AppState {
                             &self.current_links,
                             &self.current_wraps,
                             &self.current_line_offsets,
+                            &self.current_lines_text,
                             self.content_area,
                             self.scroll,
                             mouse.column,
@@ -391,6 +414,7 @@ impl AppState {
                             &self.current_links,
                             &self.current_wraps,
                             &self.current_line_offsets,
+                            &self.current_lines_text,
                             self.content_area,
                             self.scroll,
                             mouse.column,
@@ -412,7 +436,7 @@ impl AppState {
                                 &self.current_links,
                                 &self.current_wraps,
                                 &self.current_line_offsets,
-                                self.content_area.width,
+                                &self.current_lines_text,
                                 rendered_line,
                                 local_x,
                             );
@@ -426,6 +450,7 @@ impl AppState {
                             &self.current_links,
                             &self.current_wraps,
                             &self.current_line_offsets,
+                            &self.current_lines_text,
                             self.content_area,
                             self.scroll,
                             mouse.column,
@@ -436,12 +461,14 @@ impl AppState {
                 }
             }
             Event::FocusGained => {
+                let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
                 let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
                 if let Some((col, row)) = self.last_mouse_pos {
                     self.hover_link = update_hover(
                         &self.current_links,
                         &self.current_wraps,
                         &self.current_line_offsets,
+                        &self.current_lines_text,
                         self.content_area,
                         self.scroll,
                         col,
@@ -451,6 +478,22 @@ impl AppState {
             }
             Event::FocusLost => {
                 self.hover_link = None;
+            }
+            Event::Resize(_, _) => {
+                let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
+                let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
+                if let Some((col, row)) = self.last_mouse_pos {
+                    self.hover_link = update_hover(
+                        &self.current_links,
+                        &self.current_wraps,
+                        &self.current_line_offsets,
+                        &self.current_lines_text,
+                        self.content_area,
+                        self.scroll,
+                        col,
+                        row,
+                    );
+                }
             }
             _ => {}
         }
@@ -723,18 +766,15 @@ fn link_at_position(
     links: &[LinkTarget],
     wraps: &[LineWrap],
     offsets: &[u16],
-    _width: u16,
+    lines_text: &[String],
     rendered_line: u16,
     column: u16,
 ) -> Option<String> {
     let (line_idx, row) = line_from_rendered(offsets, rendered_line)?;
     let wrap = wraps.get(line_idx)?;
     let row_range = wrap.rows.get(row as usize)?;
-    let col = column as usize;
-    let char_index = row_range.start + col;
-    if char_index >= row_range.end {
-        return None;
-    }
+    let line_text = lines_text.get(line_idx)?;
+    let char_index = char_index_at_col(line_text, row_range, column as usize)?;
     links
         .iter()
         .find(|link| {
@@ -749,6 +789,7 @@ fn update_hover(
     links: &[LinkTarget],
     wraps: &[LineWrap],
     offsets: &[u16],
+    lines_text: &[String],
     area: Rect,
     scroll: u16,
     column: u16,
@@ -767,7 +808,28 @@ fn update_hover(
     let local_y = row.saturating_sub(area.y);
     let rendered_line = scroll.saturating_add(local_y);
     let local_x = column.saturating_sub(area.x);
-    link_at_position(links, wraps, offsets, area.width, rendered_line, local_x)
+    link_at_position(links, wraps, offsets, lines_text, rendered_line, local_x)
+}
+
+fn char_index_at_col(line_text: &str, row_range: &RowRange, column: usize) -> Option<usize> {
+    if row_range.start >= row_range.end {
+        return None;
+    }
+    let mut col = 0usize;
+    for (i, ch) in line_text.chars().enumerate() {
+        if i < row_range.start {
+            continue;
+        }
+        if i >= row_range.end {
+            break;
+        }
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0).max(1);
+        if column < col + width {
+            return Some(i);
+        }
+        col = col.saturating_add(width);
+    }
+    None
 }
 
 fn open_url(url: &str) -> io::Result<()> {
@@ -815,6 +877,10 @@ fn wrap_line_ranges(line: &str, width: usize) -> LineWrap {
         };
     }
     let chars: Vec<char> = line.chars().collect();
+    let widths: Vec<usize> = chars
+        .iter()
+        .map(|ch| UnicodeWidthChar::width(*ch).unwrap_or(0).max(1))
+        .collect();
     let mut tokens: Vec<(usize, usize)> = Vec::new();
     let mut start = 0usize;
     let mut in_ws = chars[0].is_whitespace();
@@ -830,46 +896,61 @@ fn wrap_line_ranges(line: &str, width: usize) -> LineWrap {
 
     let mut rows: Vec<RowRange> = Vec::new();
     let mut row_start = 0usize;
-    let mut row_len = 0usize;
+    let mut row_width = 0usize;
+    let mut row_end = 0usize;
 
     for (tok_start, tok_end) in tokens {
-        let mut token_len = tok_end - tok_start;
-        let mut token_pos = tok_start;
+        let mut token_start = tok_start;
+        let mut token_width: usize = widths[tok_start..tok_end].iter().sum();
 
         loop {
-            let remaining = width.saturating_sub(row_len);
-            if token_len <= remaining {
-                if row_len == 0 {
-                    row_start = token_pos;
+            let remaining = width.saturating_sub(row_width);
+            if token_width <= remaining {
+                if row_width == 0 {
+                    row_start = token_start;
                 }
-                row_len += token_len;
+                row_width = row_width.saturating_add(token_width);
+                row_end = tok_end;
                 break;
             }
-            if row_len > 0 {
+            if row_width > 0 {
                 rows.push(RowRange {
                     start: row_start,
-                    end: row_start + row_len,
+                    end: row_end,
                 });
-                row_len = 0;
+                row_width = 0;
                 continue;
             }
-            let chunk_len = width.min(token_len).max(1);
+            let mut consumed = 0usize;
+            let mut split_end = token_start;
+            while split_end < tok_end {
+                let w = widths[split_end];
+                if consumed + w > width && consumed > 0 {
+                    break;
+                }
+                consumed = consumed.saturating_add(w);
+                split_end += 1;
+                if consumed >= width {
+                    break;
+                }
+            }
+            let chunk_end = split_end.max(token_start + 1);
             rows.push(RowRange {
-                start: token_pos,
-                end: token_pos + chunk_len,
+                start: token_start,
+                end: chunk_end,
             });
-            token_pos += chunk_len;
-            token_len -= chunk_len;
-            if token_len == 0 {
+            token_start = chunk_end;
+            if token_start >= tok_end {
                 break;
             }
+            token_width = widths[token_start..tok_end].iter().sum();
         }
     }
 
-    if row_len > 0 {
+    if row_width > 0 {
         rows.push(RowRange {
             start: row_start,
-            end: row_start + row_len,
+            end: row_end,
         });
     }
 
@@ -890,6 +971,7 @@ mod tests {
     fn wrap_ranges_and_link_hit_test() {
         let text = String::from("abcd efghij");
         let (wraps, offsets) = build_wraps(&[text.clone()], 5);
+        let lines_text = vec![text.clone()];
         let links = vec![LinkTarget {
             line_idx: 0,
             start_char: 2,
@@ -897,13 +979,13 @@ mod tests {
             url: "https://example.com".to_string(),
         }];
 
-        let hit_row0 = link_at_position(&links, &wraps, &offsets, 5, 0, 2);
+        let hit_row0 = link_at_position(&links, &wraps, &offsets, &lines_text, 0, 2);
         assert!(hit_row0.is_some());
 
-        let hit_row1 = link_at_position(&links, &wraps, &offsets, 5, 1, 1);
+        let hit_row1 = link_at_position(&links, &wraps, &offsets, &lines_text, 1, 1);
         assert!(hit_row1.is_some());
 
-        let miss = link_at_position(&links, &wraps, &offsets, 5, 1, 4);
+        let miss = link_at_position(&links, &wraps, &offsets, &lines_text, 1, 4);
         assert!(miss.is_none());
     }
 
