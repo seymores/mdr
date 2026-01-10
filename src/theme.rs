@@ -18,6 +18,7 @@ pub struct Theme {
     pub search_fg: Color,
     pub search_bg_active: Color,
     pub search_fg_active: Color,
+    pub link: Color,
 }
 
 impl Theme {
@@ -39,6 +40,7 @@ impl Theme {
             search_fg: Color::Rgb(60, 60, 60),
             search_bg_active: Color::Rgb(255, 200, 120),
             search_fg_active: Color::Rgb(40, 40, 40),
+            link: Color::Rgb(120, 170, 230),
         }
     }
 }

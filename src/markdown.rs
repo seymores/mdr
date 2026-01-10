@@ -4,18 +4,28 @@ use ratatui::text::{Line, Span};
 
 use crate::theme::Theme;
 
-pub fn render_markdown_to_lines(
+#[derive(Clone, Debug)]
+pub struct LinkTarget {
+    pub line_idx: usize,
+    pub start_char: usize,
+    pub end_char: usize,
+    pub url: String,
+}
+
+pub fn render_markdown_with_links(
     markdown: &str,
     table_width: u16,
     theme: &Theme,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, Vec<LinkTarget>) {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
 
     let parser = Parser::new_ext(markdown, options);
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut links: Vec<LinkTarget> = Vec::new();
     let mut current: Vec<Span<'static>> = Vec::new();
+    let mut current_line_chars: usize = 0;
     let mut list_depth = 0usize;
     let mut in_code_block = false;
     let mut in_blockquote = false;
@@ -31,18 +41,31 @@ pub fn render_markdown_to_lines(
     let mut table_rows: Vec<Vec<String>> = Vec::new();
     let mut current_row: Vec<String> = Vec::new();
     let mut current_cell = String::new();
+    let mut current_link: Option<String> = None;
+    let mut current_link_line: usize = 0;
+    let mut current_link_start: usize = 0;
+    let mut current_link_has_text = false;
+    let link_style = Style::new().fg(theme.link).add_modifier(Modifier::UNDERLINED);
 
-    let flush_line = |lines: &mut Vec<Line<'static>>, current: &mut Vec<Span<'static>>| {
-        if !current.is_empty() {
-            lines.push(Line::from(std::mem::take(current)));
-        }
-    };
+    let flush_line =
+        |lines: &mut Vec<Line<'static>>, current: &mut Vec<Span<'static>>, count: &mut usize| {
+            if !current.is_empty() {
+                lines.push(Line::from(std::mem::take(current)));
+            }
+            *count = 0;
+        };
 
-    let push_blank = |lines: &mut Vec<Line<'static>>| {
+    let push_blank = |lines: &mut Vec<Line<'static>>, count: &mut usize| {
         if lines.last().map(|line| !line.spans.is_empty()).unwrap_or(false) {
             lines.push(Line::raw(""));
         }
+        *count = 0;
     };
+    let push_span =
+        |current: &mut Vec<Span<'static>>, count: &mut usize, span: Span<'static>| {
+            *count += span.content.chars().count();
+            current.push(span);
+        };
 
     for event in parser {
         if in_table {
@@ -50,8 +73,8 @@ pub fn render_markdown_to_lines(
                 MdEvent::Start(Tag::Table(alignments)) => {
                     table_columns = alignments.len();
                 }
-                MdEvent::End(TagEnd::Table) => {
-                    flush_line(&mut lines, &mut current);
+            MdEvent::End(TagEnd::Table) => {
+                    flush_line(&mut lines, &mut current, &mut current_line_chars);
                     render_table(
                         &mut lines,
                         &table_header,
@@ -142,22 +165,41 @@ pub fn render_markdown_to_lines(
                 current_row.clear();
                 current_cell.clear();
             }
+            MdEvent::Start(Tag::Link { dest_url, .. }) => {
+                current_link = Some(dest_url.to_string());
+                current_link_line = lines.len();
+                current_link_start = current_line_chars;
+                current_link_has_text = false;
+            }
+            MdEvent::End(TagEnd::Link) => {
+                if let Some(url) = current_link.take() {
+                    if current_link_has_text {
+                        links.push(LinkTarget {
+                            line_idx: current_link_line,
+                            start_char: current_link_start,
+                            end_char: current_line_chars,
+                            url,
+                        });
+                    }
+                }
+                current_link_has_text = false;
+            }
             MdEvent::Start(Tag::Heading { level, .. }) => {
-                push_blank(&mut lines);
+                push_blank(&mut lines, &mut current_line_chars);
                 heading_level = Some(level as u32);
             }
             MdEvent::End(TagEnd::Heading(_)) => {
-                flush_line(&mut lines, &mut current);
+                flush_line(&mut lines, &mut current, &mut current_line_chars);
                 lines.push(Line::raw(""));
                 heading_level = None;
             }
             MdEvent::Start(Tag::Paragraph) => {}
             MdEvent::End(TagEnd::Paragraph) => {
-                flush_line(&mut lines, &mut current);
+                flush_line(&mut lines, &mut current, &mut current_line_chars);
                 lines.push(Line::raw(""));
             }
             MdEvent::Start(Tag::List(_)) => {
-                push_blank(&mut lines);
+                push_blank(&mut lines, &mut current_line_chars);
                 list_depth += 1;
             }
             MdEvent::End(TagEnd::List(_)) => {
@@ -167,21 +209,29 @@ pub fn render_markdown_to_lines(
                 lines.push(Line::raw(""));
             }
             MdEvent::Start(Tag::Item) => {
-                flush_line(&mut lines, &mut current);
+                flush_line(&mut lines, &mut current, &mut current_line_chars);
                 if list_depth > 0 {
-                    current.push(Span::raw("  ".repeat(list_depth.saturating_sub(1))));
+                    push_span(
+                        &mut current,
+                        &mut current_line_chars,
+                        Span::raw("  ".repeat(list_depth.saturating_sub(1))),
+                    );
                 }
-                current.push(Span::styled("- ", Style::new().fg(theme.list_bullet)));
+                push_span(
+                    &mut current,
+                    &mut current_line_chars,
+                    Span::styled("- ", Style::new().fg(theme.list_bullet)),
+                );
             }
             MdEvent::End(TagEnd::Item) => {
-                flush_line(&mut lines, &mut current);
+                flush_line(&mut lines, &mut current, &mut current_line_chars);
             }
             MdEvent::Start(Tag::BlockQuote) => {
                 in_blockquote = true;
             }
             MdEvent::End(TagEnd::BlockQuote) => {
                 in_blockquote = false;
-                flush_line(&mut lines, &mut current);
+                flush_line(&mut lines, &mut current, &mut current_line_chars);
                 lines.push(Line::raw(""));
             }
             MdEvent::Start(Tag::Emphasis) => {
@@ -206,8 +256,8 @@ pub fn render_markdown_to_lines(
                 current_style = style_stack.pop().unwrap_or_default();
             }
             MdEvent::Start(Tag::CodeBlock(_)) => {
-                flush_line(&mut lines, &mut current);
-                push_blank(&mut lines);
+                flush_line(&mut lines, &mut current, &mut current_line_chars);
+                push_blank(&mut lines, &mut current_line_chars);
                 in_code_block = true;
             }
             MdEvent::End(TagEnd::CodeBlock) => {
@@ -224,30 +274,61 @@ pub fn render_markdown_to_lines(
                     }
                 } else {
                     if in_blockquote && current.is_empty() {
-                        current.push(Span::styled("> ", quote_style));
+                        push_span(
+                            &mut current,
+                            &mut current_line_chars,
+                            Span::styled("> ", quote_style),
+                        );
                     }
                     let mut style = current_style;
                     if let Some(level) = heading_level {
-                        style = style.add_modifier(Modifier::BOLD).fg(theme.heading);
-                        if level <= 2 {
-                            style = style.add_modifier(Modifier::UNDERLINED);
+                        style = style.add_modifier(Modifier::BOLD);
+                        if level == 1 {
+                            style = style.fg(theme.title).add_modifier(Modifier::UNDERLINED);
+                        } else if level == 2 {
+                            style = style.fg(theme.heading).add_modifier(Modifier::UNDERLINED);
+                        } else {
+                            style = style.fg(theme.heading);
                         }
                     }
-                    current.push(Span::styled(text.to_string(), style));
+                    if current_link.is_some() {
+                        style = style.patch(link_style);
+                        current_link_has_text = true;
+                    }
+                    push_span(
+                        &mut current,
+                        &mut current_line_chars,
+                        Span::styled(text.to_string(), style),
+                    );
                 }
             }
             MdEvent::Code(code) => {
                 if in_blockquote && current.is_empty() {
-                    current.push(Span::styled("> ", quote_style));
+                    push_span(
+                        &mut current,
+                        &mut current_line_chars,
+                        Span::styled("> ", quote_style),
+                    );
                 }
-                current.push(Span::styled(format!("`{}`", code), code_style));
+                let mut style = code_style;
+                if current_link.is_some() {
+                    style = style.patch(link_style);
+                    current_link_has_text = true;
+                }
+                push_span(
+                    &mut current,
+                    &mut current_line_chars,
+                    Span::styled(format!("`{}`", code), style),
+                );
             }
-            MdEvent::SoftBreak => current.push(Span::raw(" ")),
+            MdEvent::SoftBreak => {
+                push_span(&mut current, &mut current_line_chars, Span::raw(" "))
+            }
             MdEvent::HardBreak => {
-                flush_line(&mut lines, &mut current);
+                flush_line(&mut lines, &mut current, &mut current_line_chars);
             }
             MdEvent::Rule => {
-                push_blank(&mut lines);
+                push_blank(&mut lines, &mut current_line_chars);
                 lines.push(Line::from(Span::styled(
                     "-".repeat(32),
                     Style::new().fg(theme.rule),
@@ -258,9 +339,10 @@ pub fn render_markdown_to_lines(
         }
     }
 
-    flush_line(&mut lines, &mut current);
-    lines
+    flush_line(&mut lines, &mut current, &mut current_line_chars);
+    (lines, links)
 }
+
 
 pub fn render_plain_lines(markdown: &str) -> Vec<Line<'static>> {
     markdown
@@ -426,4 +508,39 @@ fn pad_row(row: &mut Vec<String>, columns: usize) {
         return;
     }
     row.extend(std::iter::repeat(String::new()).take(columns - row.len()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::Theme;
+
+    fn line_text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn renders_basic_markdown_blocks() {
+        let md = r#"# Title
+
+- item
+
+```
+code
+```
+
+| A | B |
+| - | - |
+| 1 | 2 |
+"#;
+        let theme = Theme::pastel();
+        let lines = render_markdown_to_lines(md, 80, &theme);
+        let text: Vec<String> = lines.iter().map(line_text).collect();
+
+        assert!(text.iter().any(|line| line == "Title"));
+        assert!(text.iter().any(|line| line.contains("- item")));
+        assert!(text.iter().any(|line| line.contains("    code")));
+        assert!(text.iter().any(|line| line.contains("| A | B |")));
+        assert!(text.iter().any(|line| line.contains("| 1 | 2 |")));
+    }
 }
