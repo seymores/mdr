@@ -4,6 +4,8 @@ A small, fast TUI markdown reader for the terminal. Clean pastel theme with BeeL
 
 ![Screenshot](docs/screenshot.png)
 
+![Screenshot](docs/open-file.png)
+
 ## Features
 - Terminal UI with a pastel color theme.
 - BeeLine-style gradient for easier line tracking (disable with `--no-beeline`, toggle with `b`).
@@ -31,6 +33,7 @@ Queue startup from mixed file + directory inputs:
 ```bash
 cargo run -- path/to/file.md docs/
 ```
+![Screenshot](docs/tabs.png)
 
 Disable BeeLine styling:
 ```bash

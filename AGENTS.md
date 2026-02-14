@@ -28,7 +28,7 @@ Follow idiomatic Rust style:
 - Keep modules focused; prefer small, testable functions.
 
 ## Testing Guidelines
-Testing should use Rust’s built-in test framework:
+Testing should use Rust's built-in test framework:
 
 - Unit tests live alongside code in `mod tests` blocks.
 - Integration tests live in `tests/` and use descriptive file names (e.g., `tests/markdown_render.rs`).
@@ -48,3 +48,6 @@ Do not commit secrets. If configuration is needed, use `.env` or `config/*.toml`
 
 ## Agent-Specific Instructions
 Keep this file up to date as commands, tooling, or structure change. Use it as the source of truth for contributors and automated agents.
+
+## Cursor/Copilot Rules
+No specific Cursor rules or Copilot instructions found in this repository.
