@@ -1,31 +1,40 @@
+use std::fs;
 use std::io;
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, MouseButton, MouseEventKind};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::{
-    execute,
-    event::DisableFocusChange,
-    event::DisableMouseCapture,
-    event::EnableFocusChange,
-    event::EnableMouseCapture,
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use crossterm::{
+    event::DisableFocusChange, event::DisableMouseCapture, event::EnableFocusChange,
+    event::EnableMouseCapture, execute,
+};
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
-use ratatui::Terminal;
+use ratatui::widgets::{
+    Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+};
 use unicode_width::UnicodeWidthChar;
 
 use crate::beeline::apply_beeline;
+use crate::document_queue::{DocumentQueue, QueuedDocument};
 use crate::markdown::{
-    estimate_rendered_lines, render_markdown_with_links, render_plain_lines, LinkTarget,
+    LinkTarget, estimate_rendered_lines, render_markdown_with_links, render_plain_lines,
 };
+use crate::picker::{PickerEntry, PickerEntryKind, list_entries};
 use crate::theme::Theme;
 
-pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<()> {
+pub fn run_tui(
+    mut queue: DocumentQueue,
+    picker_root: PathBuf,
+    enable_beeline: bool,
+) -> io::Result<()> {
     let mut stdout = io::stdout();
     enable_raw_mode()?;
     execute!(stdout, EnterAlternateScreen)?;
@@ -33,29 +42,120 @@ pub fn run_tui(path: &str, markdown: &str, enable_beeline: bool) -> io::Result<(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     execute!(terminal.backend_mut(), DisableMouseCapture)?;
-    execute!(terminal.backend_mut(), EnableMouseCapture, EnableFocusChange)?;
+    execute!(
+        terminal.backend_mut(),
+        EnableMouseCapture,
+        EnableFocusChange
+    )?;
     let theme = Theme::pastel();
 
     let mut state = AppState::new(enable_beeline);
 
     loop {
-        terminal.draw(|frame| state.render(frame, path, markdown, &theme))?;
+        {
+            let current = queue.current();
+            let path = current.path.display().to_string();
+            let queue_index = queue.current_index();
+            let queue_len = queue.len();
+            let queue_paths: Vec<String> = queue
+                .documents()
+                .iter()
+                .map(|doc| doc.path.display().to_string())
+                .collect();
+            let context = RenderContext {
+                path: &path,
+                markdown: &current.content,
+                queue_index,
+                queue_len,
+                queue_paths: &queue_paths,
+            };
+            terminal.draw(|frame| state.render(frame, &context, &theme))?;
+        }
+
         if state.priming_mode {
             if event::poll(Duration::from_millis(80))? {
                 let event = event::read()?;
-                if state.handle_event(event, &mut terminal)? {
-                    break;
+                match state.handle_event(event, &mut terminal)? {
+                    EventResult::Quit => break,
+                    EventResult::NextDocument => {
+                        queue.next();
+                        state.on_document_changed();
+                    }
+                    EventResult::PreviousDocument => {
+                        queue.prev();
+                        state.on_document_changed();
+                    }
+                    EventResult::OpenPicker => {
+                        state.open_picker(picker_root.clone());
+                    }
+                    EventResult::OpenGoDialog => {
+                        state.open_go_dialog(queue.len(), queue.current_index());
+                    }
+                    EventResult::OpenPath(path) => {
+                        let mut switched = queue.focus_existing(&path);
+                        if !switched && let Ok(content) = fs::read_to_string(&path) {
+                            queue.push_and_focus(QueuedDocument::new(path, content));
+                            switched = true;
+                        }
+                        if switched {
+                            state.on_document_changed();
+                        }
+                    }
+                    EventResult::GoToIndex(index) => {
+                        if queue.focus_index(index) {
+                            state.on_document_changed();
+                        }
+                    }
+                    EventResult::Continue => {}
                 }
-                execute!(terminal.backend_mut(), DisableMouseCapture, EnableMouseCapture)?;
+                execute!(
+                    terminal.backend_mut(),
+                    DisableMouseCapture,
+                    EnableMouseCapture
+                )?;
                 state.priming_mode = false;
             } else {
-                execute!(terminal.backend_mut(), DisableMouseCapture, EnableMouseCapture)?;
+                execute!(
+                    terminal.backend_mut(),
+                    DisableMouseCapture,
+                    EnableMouseCapture
+                )?;
                 state.priming_mode = false;
             }
         } else {
             let event = event::read()?;
-            if state.handle_event(event, &mut terminal)? {
-                break;
+            match state.handle_event(event, &mut terminal)? {
+                EventResult::Quit => break,
+                EventResult::NextDocument => {
+                    queue.next();
+                    state.on_document_changed();
+                }
+                EventResult::PreviousDocument => {
+                    queue.prev();
+                    state.on_document_changed();
+                }
+                EventResult::OpenPicker => {
+                    state.open_picker(picker_root.clone());
+                }
+                EventResult::OpenGoDialog => {
+                    state.open_go_dialog(queue.len(), queue.current_index());
+                }
+                EventResult::OpenPath(path) => {
+                    let mut switched = queue.focus_existing(&path);
+                    if !switched && let Ok(content) = fs::read_to_string(&path) {
+                        queue.push_and_focus(QueuedDocument::new(path, content));
+                        switched = true;
+                    }
+                    if switched {
+                        state.on_document_changed();
+                    }
+                }
+                EventResult::GoToIndex(index) => {
+                    if queue.focus_index(index) {
+                        state.on_document_changed();
+                    }
+                }
+                EventResult::Continue => {}
             }
         }
     }
@@ -91,6 +191,22 @@ struct AppState {
     hover_link: Option<String>,
     last_mouse_pos: Option<(u16, u16)>,
     priming_mode: bool,
+    picker_open: bool,
+    picker_query: String,
+    picker_dir: PathBuf,
+    picker_entries: Vec<PickerEntry>,
+    picker_selected: usize,
+    go_dialog_open: bool,
+    go_dialog_total: usize,
+    go_dialog_selected: usize,
+}
+
+struct RenderContext<'a> {
+    path: &'a str,
+    markdown: &'a str,
+    queue_index: usize,
+    queue_len: usize,
+    queue_paths: &'a [String],
 }
 
 impl AppState {
@@ -115,12 +231,82 @@ impl AppState {
             hover_link: None,
             last_mouse_pos: None,
             priming_mode: true,
+            picker_open: false,
+            picker_query: String::new(),
+            picker_dir: PathBuf::new(),
+            picker_entries: Vec::new(),
+            picker_selected: 0,
+            go_dialog_open: false,
+            go_dialog_total: 0,
+            go_dialog_selected: 0,
         }
     }
 
     fn close_help(&mut self) {
         if self.show_help {
             self.show_help = false;
+        }
+    }
+
+    fn on_document_changed(&mut self) {
+        self.scroll = 0;
+        self.search_mode = false;
+        self.clear_search_state();
+        self.hover_link = None;
+        self.show_help = false;
+        self.scroll_before_help = None;
+        self.current_links.clear();
+        self.current_line_offsets.clear();
+        self.current_wraps.clear();
+        self.current_lines_text.clear();
+        self.close_picker();
+        self.close_go_dialog();
+    }
+
+    fn open_picker(&mut self, start_dir: PathBuf) {
+        self.close_go_dialog();
+        self.picker_open = true;
+        self.picker_query.clear();
+        self.picker_dir = fs::canonicalize(&start_dir).unwrap_or(start_dir);
+        self.picker_selected = 0;
+        self.search_mode = false;
+        self.hover_link = None;
+        self.refresh_picker_entries();
+    }
+
+    fn close_picker(&mut self) {
+        self.picker_open = false;
+        self.picker_query.clear();
+        self.picker_entries.clear();
+        self.picker_dir = PathBuf::new();
+        self.picker_selected = 0;
+    }
+
+    fn open_go_dialog(&mut self, total: usize, current_index: usize) {
+        self.close_picker();
+        self.go_dialog_open = total > 0;
+        self.go_dialog_total = total;
+        self.go_dialog_selected = if total == 0 {
+            0
+        } else {
+            current_index.min(total - 1)
+        };
+        self.search_mode = false;
+        self.show_help = false;
+        self.hover_link = None;
+    }
+
+    fn close_go_dialog(&mut self) {
+        self.go_dialog_open = false;
+        self.go_dialog_total = 0;
+        self.go_dialog_selected = 0;
+    }
+
+    fn refresh_picker_entries(&mut self) {
+        self.picker_entries =
+            list_entries(self.picker_dir.clone(), &self.picker_query).unwrap_or_default();
+        if self.picker_selected >= self.picker_entries.len() {
+            self.picker_selected = self.picker_entries.len().saturating_sub(1);
         }
     }
 
@@ -198,6 +384,12 @@ impl AppState {
                 self.plain_mode = !self.plain_mode;
                 KeyAction::None
             }
+            KeyCode::Char(']') if !self.search_mode && !self.show_help => KeyAction::NextDocument,
+            KeyCode::Char('[') if !self.search_mode && !self.show_help => {
+                KeyAction::PreviousDocument
+            }
+            KeyCode::Char('g') if !self.search_mode && !self.show_help => KeyAction::OpenGoDialog,
+            KeyCode::Char('o') if !self.search_mode && !self.show_help => KeyAction::OpenPicker,
             KeyCode::Down => {
                 self.scroll = self.scroll.saturating_add(1);
                 KeyAction::None
@@ -235,15 +427,16 @@ impl AppState {
         }
     }
 
-    fn render(&mut self, frame: &mut ratatui::Frame, path: &str, markdown: &str, theme: &Theme) {
+    fn render(&mut self, frame: &mut ratatui::Frame, context: &RenderContext<'_>, theme: &Theme) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .margin(1)
             .split(frame.size());
 
+        let title_text = queue_label(context.queue_index, context.queue_len, context.path);
         let title = Span::styled(
-            format!("{}", path),
+            title_text,
             Style::new().fg(theme.title).add_modifier(Modifier::BOLD),
         );
         let block = Block::default()
@@ -268,10 +461,10 @@ impl AppState {
             }
             let mut lines = if self.plain_mode {
                 self.current_links.clear();
-                render_plain_lines(markdown)
+                render_plain_lines(context.markdown)
             } else {
                 let (lines, links) =
-                    render_markdown_with_links(markdown, content_chunks[0].width, theme);
+                    render_markdown_with_links(context.markdown, content_chunks[0].width, theme);
                 self.current_links = links;
                 lines
             };
@@ -281,7 +474,12 @@ impl AppState {
 
             let lines_text: Vec<String> = lines
                 .iter()
-                .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect()
+                })
                 .collect();
             self.current_lines_text = lines_text;
             let (wraps, offsets) = build_wraps(&self.current_lines_text, content_chunks[0].width);
@@ -372,6 +570,13 @@ impl AppState {
             let status = Line::from(status_spans);
             frame.render_widget(Paragraph::new(status).right_aligned(), footer_chunks[1]);
         }
+
+        if self.picker_open {
+            self.render_picker_overlay(frame, chunks[0], theme);
+        }
+        if self.go_dialog_open {
+            self.render_go_dialog_overlay(frame, chunks[0], context.queue_paths, theme);
+        }
     }
 
     fn render_lines(&mut self, frame: &mut ratatui::Frame, lines: &[Line<'static>], area: Rect) {
@@ -399,17 +604,151 @@ impl AppState {
         frame.render_widget(paragraph, area);
     }
 
+    fn render_picker_overlay(&self, frame: &mut ratatui::Frame, area: Rect, theme: &Theme) {
+        let popup = centered_rect(80, 70, area);
+        frame.render_widget(Clear, popup);
+        let block = Block::default()
+            .title(Span::styled(
+                "Open Markdown (Filesystem)",
+                Style::new().fg(theme.title).add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(theme.border));
+        frame.render_widget(block.clone(), popup);
+        let inner = block.inner(popup);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+
+        let dir = Line::styled(
+            format!("dir: {}", self.picker_dir.display()),
+            Style::new().fg(theme.footer).dim(),
+        );
+        frame.render_widget(Paragraph::new(dir), chunks[0]);
+
+        let query = Line::styled(
+            format!("query: {}", self.picker_query),
+            Style::new().fg(theme.footer),
+        );
+        frame.render_widget(Paragraph::new(query), chunks[1]);
+
+        let mut lines = Vec::new();
+        if self.picker_entries.is_empty() {
+            lines.push(Line::styled(
+                "No markdown files or directories found",
+                Style::new().fg(theme.footer).dim(),
+            ));
+        } else {
+            let visible = chunks[2].height.max(1) as usize;
+            let start = self
+                .picker_selected
+                .saturating_sub(visible.saturating_sub(1));
+            let end = (start + visible).min(self.picker_entries.len());
+            for idx in start..end {
+                let entry = &self.picker_entries[idx];
+                let mut style = Style::new().fg(theme.footer);
+                if idx == self.picker_selected {
+                    style = style
+                        .fg(theme.search_fg_active)
+                        .bg(theme.search_bg_active)
+                        .add_modifier(Modifier::BOLD);
+                }
+                lines.push(Line::styled(entry.label.clone(), style));
+            }
+        }
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[2]);
+
+        let help = Line::styled(
+            "Enter open/enter dir  Backspace up  Esc close",
+            Style::new().fg(theme.footer).dim(),
+        );
+        frame.render_widget(Paragraph::new(help), chunks[3]);
+    }
+
+    fn render_go_dialog_overlay(
+        &self,
+        frame: &mut ratatui::Frame,
+        area: Rect,
+        queue_paths: &[String],
+        theme: &Theme,
+    ) {
+        let popup = centered_rect(70, 60, area);
+        frame.render_widget(Clear, popup);
+        let block = Block::default()
+            .title(Span::styled(
+                "Go To Document",
+                Style::new().fg(theme.title).add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(theme.border));
+        frame.render_widget(block.clone(), popup);
+        let inner = block.inner(popup);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+
+        let mut lines = Vec::new();
+        if queue_paths.is_empty() {
+            lines.push(Line::styled(
+                "Queue is empty",
+                Style::new().fg(theme.footer).dim(),
+            ));
+        } else {
+            let visible = chunks[0].height.max(1) as usize;
+            let start = self
+                .go_dialog_selected
+                .saturating_sub(visible.saturating_sub(1));
+            let end = (start + visible).min(queue_paths.len());
+            for (idx, path) in queue_paths[start..end].iter().enumerate() {
+                let absolute_idx = start + idx;
+                let mut style = Style::new().fg(theme.footer);
+                if absolute_idx == self.go_dialog_selected {
+                    style = style
+                        .fg(theme.search_fg_active)
+                        .bg(theme.search_bg_active)
+                        .add_modifier(Modifier::BOLD);
+                }
+                lines.push(Line::styled(
+                    format!("[{}/{}] {}", absolute_idx + 1, queue_paths.len(), path),
+                    style,
+                ));
+            }
+        }
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[0]);
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "Enter go  Esc close  Up/Down select",
+                Style::new().fg(theme.footer).dim(),
+            )),
+            chunks[1],
+        );
+    }
+
     fn handle_event(
         &mut self,
         event: Event,
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    ) -> io::Result<bool> {
+    ) -> io::Result<EventResult> {
         match event {
             Event::Key(key) => {
+                if self.picker_open {
+                    return Ok(self.handle_picker_key_input(key.code));
+                }
+                if self.go_dialog_open {
+                    return Ok(self.handle_go_dialog_key_input(key.code));
+                }
+
                 let page = self.viewport_height.saturating_sub(1).max(1);
                 let max_scroll = self.rendered_lines.saturating_sub(self.viewport_height);
                 match self.handle_key_input(key.code, max_scroll, page) {
-                    KeyAction::Quit => return Ok(true),
+                    KeyAction::Quit => return Ok(EventResult::Quit),
                     KeyAction::OpenLink => {
                         if let Some(url) = link_at_scroll(
                             &self.current_links,
@@ -420,6 +759,10 @@ impl AppState {
                             let _ = open_url(&url);
                         }
                     }
+                    KeyAction::NextDocument => return Ok(EventResult::NextDocument),
+                    KeyAction::PreviousDocument => return Ok(EventResult::PreviousDocument),
+                    KeyAction::OpenPicker => return Ok(EventResult::OpenPicker),
+                    KeyAction::OpenGoDialog => return Ok(EventResult::OpenGoDialog),
                     KeyAction::None => {}
                 }
             }
@@ -430,45 +773,18 @@ impl AppState {
                     MouseEventKind::ScrollDown => {
                         self.scroll = self.scroll.saturating_add(3).min(max_scroll);
                         if !self.show_help {
-                            self.hover_link = update_hover(
-                                &self.current_links,
-                                &self.current_wraps,
-                                &self.current_line_offsets,
-                                &self.current_lines_text,
-                                self.content_area,
-                                self.scroll,
-                                mouse.column,
-                                mouse.row,
-                            );
+                            self.hover_link = update_hover(self, mouse.column, mouse.row);
                         }
                     }
                     MouseEventKind::ScrollUp => {
                         self.scroll = self.scroll.saturating_sub(3);
                         if !self.show_help {
-                            self.hover_link = update_hover(
-                                &self.current_links,
-                                &self.current_wraps,
-                                &self.current_line_offsets,
-                                &self.current_lines_text,
-                                self.content_area,
-                                self.scroll,
-                                mouse.column,
-                                mouse.row,
-                            );
+                            self.hover_link = update_hover(self, mouse.column, mouse.row);
                         }
                     }
                     MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                         if !self.show_help {
-                            self.hover_link = update_hover(
-                                &self.current_links,
-                                &self.current_wraps,
-                                &self.current_line_offsets,
-                                &self.current_lines_text,
-                                self.content_area,
-                                self.scroll,
-                                mouse.column,
-                                mouse.row,
-                            );
+                            self.hover_link = update_hover(self, mouse.column, mouse.row);
                         }
                     }
                     MouseEventKind::Down(MouseButton::Left) => {
@@ -497,16 +813,7 @@ impl AppState {
                     }
                     MouseEventKind::Up(_) => {
                         if !self.show_help {
-                            self.hover_link = update_hover(
-                                &self.current_links,
-                                &self.current_wraps,
-                                &self.current_line_offsets,
-                                &self.current_lines_text,
-                                self.content_area,
-                                self.scroll,
-                                mouse.column,
-                                mouse.row,
-                            );
+                            self.hover_link = update_hover(self, mouse.column, mouse.row);
                         }
                     }
                     _ => {}
@@ -516,16 +823,7 @@ impl AppState {
                 let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
                 let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
                 if let Some((col, row)) = self.last_mouse_pos {
-                    self.hover_link = update_hover(
-                        &self.current_links,
-                        &self.current_wraps,
-                        &self.current_line_offsets,
-                        &self.current_lines_text,
-                        self.content_area,
-                        self.scroll,
-                        col,
-                        row,
-                    );
+                    self.hover_link = update_hover(self, col, row);
                 }
             }
             Event::FocusLost => {
@@ -535,21 +833,111 @@ impl AppState {
                 let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
                 let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
                 if let Some((col, row)) = self.last_mouse_pos {
-                    self.hover_link = update_hover(
-                        &self.current_links,
-                        &self.current_wraps,
-                        &self.current_line_offsets,
-                        &self.current_lines_text,
-                        self.content_area,
-                        self.scroll,
-                        col,
-                        row,
-                    );
+                    self.hover_link = update_hover(self, col, row);
                 }
             }
             _ => {}
         }
-        Ok(false)
+        Ok(EventResult::Continue)
+    }
+
+    fn handle_picker_key_input(&mut self, code: KeyCode) -> EventResult {
+        match code {
+            KeyCode::Esc => {
+                self.close_picker();
+                EventResult::Continue
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                self.picker_selected = self.picker_selected.saturating_sub(1);
+                EventResult::Continue
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                if !self.picker_entries.is_empty() {
+                    self.picker_selected =
+                        (self.picker_selected + 1).min(self.picker_entries.len() - 1);
+                }
+                EventResult::Continue
+            }
+            KeyCode::Home => {
+                self.picker_selected = 0;
+                EventResult::Continue
+            }
+            KeyCode::End => {
+                self.picker_selected = self.picker_entries.len().saturating_sub(1);
+                EventResult::Continue
+            }
+            KeyCode::Backspace => {
+                if self.picker_query.is_empty() {
+                    if let Some(parent) = self.picker_dir.parent() {
+                        self.picker_dir = parent.to_path_buf();
+                        self.picker_selected = 0;
+                    }
+                } else {
+                    self.picker_query.pop();
+                }
+                self.refresh_picker_entries();
+                EventResult::Continue
+            }
+            KeyCode::Char(c) => {
+                self.picker_query.push(c);
+                self.refresh_picker_entries();
+                EventResult::Continue
+            }
+            KeyCode::Enter => {
+                if let Some(entry) = self.picker_entries.get(self.picker_selected).cloned() {
+                    match entry.kind {
+                        PickerEntryKind::Parent | PickerEntryKind::Directory => {
+                            self.picker_dir = entry.path;
+                            self.picker_query.clear();
+                            self.picker_selected = 0;
+                            self.refresh_picker_entries();
+                            EventResult::Continue
+                        }
+                        PickerEntryKind::MarkdownFile => {
+                            self.close_picker();
+                            EventResult::OpenPath(entry.path)
+                        }
+                    }
+                } else {
+                    EventResult::Continue
+                }
+            }
+            _ => EventResult::Continue,
+        }
+    }
+
+    fn handle_go_dialog_key_input(&mut self, code: KeyCode) -> EventResult {
+        match code {
+            KeyCode::Esc => {
+                self.close_go_dialog();
+                EventResult::Continue
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                self.go_dialog_selected = self.go_dialog_selected.saturating_sub(1);
+                EventResult::Continue
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                if self.go_dialog_total > 0 {
+                    self.go_dialog_selected =
+                        (self.go_dialog_selected + 1).min(self.go_dialog_total - 1);
+                }
+                EventResult::Continue
+            }
+            KeyCode::Home => {
+                self.go_dialog_selected = 0;
+                EventResult::Continue
+            }
+            KeyCode::End => {
+                self.go_dialog_selected = self.go_dialog_total.saturating_sub(1);
+                EventResult::Continue
+            }
+            KeyCode::Enter => {
+                let selected = self.go_dialog_selected;
+                self.close_go_dialog();
+                EventResult::GoToIndex(selected)
+            }
+            _ => EventResult::Continue,
+        }
     }
 
     fn clear_search_state(&mut self) {
@@ -577,6 +965,21 @@ enum KeyAction {
     None,
     Quit,
     OpenLink,
+    NextDocument,
+    PreviousDocument,
+    OpenPicker,
+    OpenGoDialog,
+}
+
+enum EventResult {
+    Continue,
+    Quit,
+    OpenPicker,
+    OpenGoDialog,
+    OpenPath(PathBuf),
+    GoToIndex(usize),
+    NextDocument,
+    PreviousDocument,
 }
 
 #[derive(Clone)]
@@ -600,6 +1003,8 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::raw("Navigation:"),
         Line::raw("  Up/Down              Scroll line by line"),
         Line::raw("  Space                Page down"),
+        Line::raw("  ]                    Next document"),
+        Line::raw("  [                    Previous document"),
         Line::raw("  Mouse wheel          Scroll"),
         Line::raw(""),
         Line::raw("Search:"),
@@ -613,9 +1018,36 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::raw("  m                    Toggle plain mode"),
         Line::raw(""),
         Line::raw("General:"),
+        Line::raw("  g                    Go to document"),
+        Line::raw("  o                    Open markdown filesystem browser"),
         Line::raw("  h                    Toggle help"),
         Line::raw("  q                    Quit"),
     ]
+}
+
+fn queue_label(current_index: usize, total: usize, path: &str) -> String {
+    let total = total.max(1);
+    let current = (current_index + 1).min(total);
+    format!("[{}/{}] {}", current, total, path)
+}
+
+fn centered_rect(width_percent: u16, height_percent: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - height_percent) / 2),
+            Constraint::Percentage(height_percent),
+            Constraint::Percentage((100 - height_percent) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - width_percent) / 2),
+            Constraint::Percentage(width_percent),
+            Constraint::Percentage((100 - width_percent) / 2),
+        ])
+        .split(vertical[1])[1]
 }
 
 fn find_matches(lines: &[String], query: &str) -> Vec<SearchMatch> {
@@ -698,11 +1130,7 @@ fn apply_search_highlight_line(
         for ch in span.content.chars() {
             let mut style = span.style;
             if highlights.get(char_index).copied().unwrap_or(false) {
-                let highlight = if active_highlights
-                    .get(char_index)
-                    .copied()
-                    .unwrap_or(false)
-                {
+                let highlight = if active_highlights.get(char_index).copied().unwrap_or(false) {
                     Style::new()
                         .bg(theme.search_bg_active)
                         .fg(theme.search_fg_active)
@@ -715,7 +1143,10 @@ fn apply_search_highlight_line(
                 current.push(ch);
             } else {
                 if !current.is_empty() {
-                    spans.push(Span::styled(current.clone(), current_style.unwrap_or_default()));
+                    spans.push(Span::styled(
+                        current.clone(),
+                        current_style.unwrap_or_default(),
+                    ));
                     current.clear();
                 }
                 current_style = Some(style);
@@ -746,7 +1177,7 @@ fn match_ranges(line: &str, query: &str) -> Vec<(usize, usize)> {
     for i in 0..=hay.len() - needle.len() {
         let mut matched = true;
         for j in 0..needle.len() {
-            if hay[i + j].to_ascii_lowercase() != needle[j].to_ascii_lowercase() {
+            if !hay[i + j].eq_ignore_ascii_case(&needle[j]) {
                 matched = false;
                 break;
             }
@@ -774,7 +1205,6 @@ fn build_search_matches(
     }
     matches
 }
-
 
 fn line_from_rendered(offsets: &[u16], rendered_line: u16) -> Option<(usize, u16)> {
     if offsets.is_empty() {
@@ -836,37 +1266,33 @@ fn link_at_position(
     links
         .iter()
         .find(|link| {
-            link.line_idx == line_idx
-                && char_index >= link.start_char
-                && char_index < link.end_char
+            link.line_idx == line_idx && char_index >= link.start_char && char_index < link.end_char
         })
         .map(|link| link.url.clone())
 }
 
-fn update_hover(
-    links: &[LinkTarget],
-    wraps: &[LineWrap],
-    offsets: &[u16],
-    lines_text: &[String],
-    area: Rect,
-    scroll: u16,
-    column: u16,
-    row: u16,
-) -> Option<String> {
-    if links.is_empty() {
+fn update_hover(state: &AppState, column: u16, row: u16) -> Option<String> {
+    if state.current_links.is_empty() {
         return None;
     }
-    if column < area.x
-        || column >= area.x + area.width
-        || row < area.y
-        || row >= area.y + area.height
+    if column < state.content_area.x
+        || column >= state.content_area.x + state.content_area.width
+        || row < state.content_area.y
+        || row >= state.content_area.y + state.content_area.height
     {
         return None;
     }
-    let local_y = row.saturating_sub(area.y);
-    let rendered_line = scroll.saturating_add(local_y);
-    let local_x = column.saturating_sub(area.x);
-    link_at_position(links, wraps, offsets, lines_text, rendered_line, local_x)
+    let local_y = row.saturating_sub(state.content_area.y);
+    let rendered_line = state.scroll.saturating_add(local_y);
+    let local_x = column.saturating_sub(state.content_area.x);
+    link_at_position(
+        &state.current_links,
+        &state.current_wraps,
+        &state.current_line_offsets,
+        &state.current_lines_text,
+        rendered_line,
+        local_x,
+    )
 }
 
 fn char_index_at_col(line_text: &str, row_range: &RowRange, column: usize) -> Option<usize> {

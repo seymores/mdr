@@ -8,6 +8,10 @@ A small, fast TUI markdown reader for the terminal. Clean pastel theme with BeeL
 - Terminal UI with a pastel color theme.
 - BeeLine-style gradient for easier line tracking (disable with `--no-beeline`, toggle with `b`).
 - Plain mode toggle (`m`) for minimal styling.
+- Multi-document queue with visual current-file indicator (`[current/total] path` in the title).
+- Startup markdown discovery from mixed file and directory inputs.
+- In-app markdown filesystem browser (`o`) starting from current working directory.
+- Picker traversal support: enter directories, go to parent, and open markdown files directly.
 - Keyboard navigation: Up/Down, Space or Tab for page down, `h` for commands.
 - Mouse wheel scrolling and hover to show link URLs.
 - Basic markdown styling for headings, lists, emphasis, inline code, blockquotes, and rules.
@@ -21,6 +25,11 @@ A small, fast TUI markdown reader for the terminal. Clean pastel theme with BeeL
 ## Usage
 ```bash
 cargo run -- path/to/file.md
+```
+
+Queue startup from mixed file + directory inputs:
+```bash
+cargo run -- path/to/file.md docs/
 ```
 
 Disable BeeLine styling:
@@ -37,6 +46,10 @@ cargo install --path . --locked
 - `Up/Down`: Scroll line by line
 - `Space` or `Tab`: Page down
 - `Backtab`: Page up
+- `]`: Next document in queue
+- `[`: Previous document in queue
+- `g`: Go-to-document dialog for queue navigation
+- `o`: Open markdown filesystem browser (from current working directory)
 - `/`: Search
 - `n` / `N`: Next / previous match
 - `b`: Toggle BeeLine

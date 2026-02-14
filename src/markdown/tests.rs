@@ -2,7 +2,10 @@ use super::*;
 use crate::theme::Theme;
 
 fn line_text(line: &Line<'static>) -> String {
-    line.spans.iter().map(|span| span.content.as_ref()).collect()
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
 }
 
 #[test]

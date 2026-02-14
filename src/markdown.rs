@@ -3,7 +3,7 @@ use pulldown_cmark::{CodeBlockKind, Event as MdEvent, Options, Parser, Tag, TagE
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{ThemeSet};
+use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
@@ -53,7 +53,9 @@ pub fn render_markdown_with_links(
     let mut current_link_line: usize = 0;
     let mut current_link_start: usize = 0;
     let mut current_link_has_text = false;
-    let link_style = Style::new().fg(theme.link).add_modifier(Modifier::UNDERLINED);
+    let link_style = Style::new()
+        .fg(theme.link)
+        .add_modifier(Modifier::UNDERLINED);
     let mut code_block_language: Option<String> = None;
     let mut code_block_text = String::new();
 
@@ -66,16 +68,19 @@ pub fn render_markdown_with_links(
         };
 
     let push_blank = |lines: &mut Vec<Line<'static>>, count: &mut usize| {
-        if lines.last().map(|line| !line.spans.is_empty()).unwrap_or(false) {
+        if lines
+            .last()
+            .map(|line| !line.spans.is_empty())
+            .unwrap_or(false)
+        {
             lines.push(Line::raw(""));
         }
         *count = 0;
     };
-    let push_span =
-        |current: &mut Vec<Span<'static>>, count: &mut usize, span: Span<'static>| {
-            *count += span.content.chars().count();
-            current.push(span);
-        };
+    let push_span = |current: &mut Vec<Span<'static>>, count: &mut usize, span: Span<'static>| {
+        *count += span.content.chars().count();
+        current.push(span);
+    };
 
     for event in parser {
         if in_table {
@@ -83,7 +88,7 @@ pub fn render_markdown_with_links(
                 MdEvent::Start(Tag::Table(alignments)) => {
                     table_columns = alignments.len();
                 }
-            MdEvent::End(TagEnd::Table) => {
+                MdEvent::End(TagEnd::Table) => {
                     flush_line(&mut lines, &mut current, &mut current_line_chars);
                     render_table(
                         &mut lines,
@@ -182,15 +187,15 @@ pub fn render_markdown_with_links(
                 current_link_has_text = false;
             }
             MdEvent::End(TagEnd::Link) => {
-                if let Some(url) = current_link.take() {
-                    if current_link_has_text {
-                        links.push(LinkTarget {
-                            line_idx: current_link_line,
-                            start_char: current_link_start,
-                            end_char: current_line_chars,
-                            url,
-                        });
-                    }
+                if let Some(url) = current_link.take()
+                    && current_link_has_text
+                {
+                    links.push(LinkTarget {
+                        line_idx: current_link_line,
+                        start_char: current_link_start,
+                        end_char: current_line_chars,
+                        url,
+                    });
                 }
                 current_link_has_text = false;
             }
@@ -213,9 +218,7 @@ pub fn render_markdown_with_links(
                 list_depth += 1;
             }
             MdEvent::End(TagEnd::List(_)) => {
-                if list_depth > 0 {
-                    list_depth -= 1;
-                }
+                list_depth = list_depth.saturating_sub(1);
                 lines.push(Line::raw(""));
             }
             MdEvent::Start(Tag::Item) => {
@@ -376,7 +379,6 @@ pub fn render_markdown_with_links(
     (lines, links)
 }
 
-
 pub fn render_plain_lines(markdown: &str) -> Vec<Line<'static>> {
     markdown
         .lines()
@@ -392,7 +394,7 @@ pub fn estimate_rendered_lines(lines: &[Line<'static>], width: u16) -> u16 {
     let mut total: usize = 0;
     for line in lines {
         let line_width = line.width().max(1);
-        let wrapped = (line_width + width - 1) / width;
+        let wrapped = line_width.div_ceil(width);
         total = total.saturating_add(wrapped.max(1));
     }
     total.min(u16::MAX as usize) as u16
@@ -428,9 +430,9 @@ fn render_table(
     let format_wrapped_row = |row: &[String]| -> Vec<String> {
         let mut wrapped_cells: Vec<Vec<String>> = Vec::with_capacity(col_count);
         let mut row_height = 1usize;
-        for i in 0..col_count {
+        for (i, width) in widths.iter().enumerate().take(col_count) {
             let cell = row.get(i).map(String::as_str).unwrap_or("");
-            let wrapped = wrap_cell(cell, widths[i].max(1));
+            let wrapped = wrap_cell(cell, (*width).max(1));
             row_height = row_height.max(wrapped.len());
             wrapped_cells.push(wrapped);
         }
@@ -438,9 +440,12 @@ fn render_table(
         let mut output: Vec<String> = Vec::with_capacity(row_height);
         for line_idx in 0..row_height {
             let mut out = String::from("|");
-            for i in 0..col_count {
-                let cell_line = wrapped_cells[i].get(line_idx).map(String::as_str).unwrap_or("");
-                let pad = widths[i].saturating_sub(cell_line.chars().count());
+            for (i, width) in widths.iter().enumerate().take(col_count) {
+                let cell_line = wrapped_cells[i]
+                    .get(line_idx)
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let pad = width.saturating_sub(cell_line.chars().count());
                 out.push(' ');
                 out.push_str(cell_line);
                 out.push_str(&" ".repeat(pad));
@@ -458,7 +463,7 @@ fn render_table(
         }
         let mut sep = String::from("|");
         for w in &widths {
-            sep.push_str(" ");
+            sep.push(' ');
             sep.push_str(&"-".repeat((*w).max(1)));
             sep.push_str(" |");
         }
@@ -540,7 +545,7 @@ fn pad_row(row: &mut Vec<String>, columns: usize) {
     if row.len() >= columns {
         return;
     }
-    row.extend(std::iter::repeat(String::new()).take(columns - row.len()));
+    row.extend(std::iter::repeat_n(String::new(), columns - row.len()));
 }
 
 fn render_code_block(

@@ -22,7 +22,7 @@ fn apply_beeline_line(line: &Line<'static>, index: usize, theme: &Theme) -> Line
         return line.clone();
     }
 
-    let forward = index % 2 == 0;
+    let forward = index.is_multiple_of(2);
     let mut pos = 0usize;
     let mut spans: Vec<Span<'static>> = Vec::new();
 
